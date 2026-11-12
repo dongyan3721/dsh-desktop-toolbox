@@ -127,7 +127,9 @@ function requireText(value, field, {
   if (scalars < minScalars) {
     throw invalidRequest(`${field} must be at least ${minScalars} Unicode scalar`)
   }
-  if (nonWhitespace && value.trim() === '') {
+  // Match Rust char::is_whitespace (Unicode White_Space), including NEL and
+  // excluding the BOM that JavaScript String.trim() treats as whitespace.
+  if (nonWhitespace && /^\p{White_Space}*$/u.test(value)) {
     throw invalidRequest(`${field} must contain non-whitespace text`)
   }
   return value

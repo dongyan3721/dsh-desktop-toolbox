@@ -20,6 +20,8 @@ test('built native plugin loads through actual Loader and executes notes through
     assert.equal(note.value.is_open, false);
     const found = await harness.call('toolbox_note_search', { query: 'real sqlite fixture' });
     assert.equal(found.value.items[0].id, note.value.id);
+    assert.equal((await harness.call('toolbox_note_create', { title: '\u0085', content_md: '' })).isError, true);
+    assert.equal((await harness.call('toolbox_note_create', { title: '\uFEFF', content_md: '' })).isError, false);
     const controller = new AbortController();
     controller.abort();
     await assert.rejects(tool.execute({}, { signal: controller.signal }), { name: 'AbortError' });
