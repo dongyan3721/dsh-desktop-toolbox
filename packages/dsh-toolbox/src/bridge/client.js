@@ -2,6 +2,13 @@ import net from 'node:net';
 import crypto from 'node:crypto';
 import { BridgeError } from './errors.js';
 import { encodeFrame, FrameDecoder } from './framing.js';
+import {
+  validateReadyFrame,
+  validateResponseFrame,
+  validateEventFrame,
+  validatePositiveFiniteNumber,
+  MAX_ACTIVE_REQUESTS,
+} from './validation.js';
 
 /**
  * Connects to the native toolbox Named Pipe server and performs protocol handshake.
@@ -10,7 +17,8 @@ import { encodeFrame, FrameDecoder } from './framing.js';
  * @param {string} options.pipePath - Full Windows Named Pipe path (e.g. \\.\pipe\dsh-toolbox-<uuid>)
  * @param {string} options.instanceId - Instance UUID to negotiate and verify during handshake
  * @param {AbortSignal} [options.signal] - Optional signal to abort the connection and handshake
- * @param {number} [options.timeoutMs=5000] - Handshake timeout in milliseconds
+ * @param {number} [options.timeoutMs=5000] - Handshake timeout in milliseconds (positive finite number)
+ * @param {number} [options.cancelTimeoutMs=1500] - Grace period to await terminal response after cancellation (positive finite number)
  * @returns {Promise<{
  *   request: (method: string, params?: any, options?: { signal?: AbortSignal, timeoutMs?: number, onEvent?: (event: object) => void }) => Promise<any>,
  *   close: () => Promise<void>,
@@ -18,7 +26,13 @@ import { encodeFrame, FrameDecoder } from './framing.js';
  *   readonly isClosed: boolean
  * }>}
  */
-export async function connectBridge({ pipePath, instanceId, signal, timeoutMs = 5000 }) {
+export async function connectBridge({
+  pipePath,
+  instanceId,
+  signal,
+  timeoutMs = 5000,
+  cancelTimeoutMs = 1500,
+}) {
   if (!pipePath || typeof pipePath !== 'string') {
     throw new BridgeError('pipePath must be a non-empty string', 'INVALID_REQUEST');
   }
@@ -26,8 +40,13 @@ export async function connectBridge({ pipePath, instanceId, signal, timeoutMs = 
     throw new BridgeError('instanceId must be a non-empty string', 'INVALID_REQUEST');
   }
 
+  validatePositiveFiniteNumber(timeoutMs, 'timeoutMs');
+  validatePositiveFiniteNumber(cancelTimeoutMs, 'cancelTimeoutMs');
+
   if (signal?.aborted) {
-    const err = new BridgeError(signal.reason?.message || 'Connection aborted', 'CANCELLED');
+    const err = new BridgeError(signal.reason?.message || 'Connection aborted', 'CANCELLED', {
+      causeCode: 'CANCELLED',
+    });
     err.name = 'AbortError';
     throw err;
   }
@@ -56,36 +75,42 @@ export async function connectBridge({ pipePath, instanceId, signal, timeoutMs = 
       }
     };
 
-    const failAllPending = (err) => {
-      for (const req of activeRequests.values()) {
-        req.cleanup();
-        req.reject(err);
-      }
-      activeRequests.clear();
-    };
-
     const failConnection = (err) => {
       if (isClosed) return;
       isClosed = true;
-      failAllPending(err);
+
+      for (const req of activeRequests.values()) {
+        req.cleanup();
+        const causeCode = req.state === 'cancelling'
+          ? (req.cancelCauseCode || 'DISCONNECTED')
+          : 'DISCONNECTED';
+        const unknownErr = new BridgeError(
+          'Transport disconnected before terminal response received; outcome unknown',
+          'OUTCOME_UNKNOWN',
+          { causeCode, cause: err }
+        );
+        req.reject(unknownErr);
+      }
+      activeRequests.clear();
+
       if (!socket.destroyed) {
         socket.destroy();
       }
     };
 
-    if (typeof timeoutMs === 'number' && timeoutMs > 0) {
-      handshakeTimer = setTimeout(() => {
-        cleanupHandshake();
-        const err = new BridgeError(`Bridge handshake timed out after ${timeoutMs}ms`, 'TIMEOUT');
-        socket.destroy();
-        reject(err);
-      }, timeoutMs);
-    }
+    handshakeTimer = setTimeout(() => {
+      cleanupHandshake();
+      const err = new BridgeError(`Bridge handshake timed out after ${timeoutMs}ms`, 'TIMEOUT');
+      socket.destroy();
+      reject(err);
+    }, timeoutMs);
 
     if (signal) {
       handshakeAbortListener = () => {
         cleanupHandshake();
-        const err = new BridgeError(signal.reason?.message || 'Bridge connection aborted', 'CANCELLED');
+        const err = new BridgeError(signal.reason?.message || 'Bridge connection aborted', 'CANCELLED', {
+          causeCode: 'CANCELLED',
+        });
         err.name = 'AbortError';
         socket.destroy();
         reject(err);
@@ -123,82 +148,55 @@ export async function connectBridge({ pipePath, instanceId, signal, timeoutMs = 
 
       for (const frame of frames) {
         if (!isHandshaken) {
-          // Expect ready frame
-          if (frame.v !== 1) {
+          try {
+            validateReadyFrame(frame, instanceId);
+          } catch (err) {
             cleanupHandshake();
             socket.destroy();
-            return reject(new BridgeError(`Unsupported protocol version: ${frame.v}`, 'HANDSHAKE_FAILED'));
-          }
-
-          if (frame.type !== 'ready') {
-            cleanupHandshake();
-            socket.destroy();
-            return reject(new BridgeError(`Expected ready frame, got: ${frame.type}`, 'HANDSHAKE_FAILED'));
-          }
-
-          if (frame.instanceId !== instanceId) {
-            cleanupHandshake();
-            socket.destroy();
-            return reject(
-              new BridgeError(`Instance ID mismatch: expected ${instanceId}, got ${frame.instanceId}`, 'HANDSHAKE_FAILED')
-            );
-          }
-
-          if (!Array.isArray(frame.capabilities)) {
-            cleanupHandshake();
-            socket.destroy();
-            return reject(
-              new BridgeError('Invalid ready frame: capabilities must be an array of strings', 'HANDSHAKE_FAILED')
-            );
+            return reject(err);
           }
 
           isHandshaken = true;
           capabilities = Object.freeze([...frame.capabilities]);
           cleanupHandshake();
-          return resolve(client);
+          resolve(client);
+          // Do NOT return here: continue processing subsequent frames in this same data batch!
+          continue;
         }
 
-        // Post-handshake messages
+        // Post-handshake frame routing
         if (frame.type === 'response') {
-          if (frame.v !== 1) {
-            failConnection(new BridgeError(`Protocol version mismatch in response: ${frame.v}`, 'PROTOCOL_ERROR'));
-            return;
-          }
-
-          if (typeof frame.id !== 'string') {
-            failConnection(new BridgeError('Response missing valid string id', 'PROTOCOL_ERROR'));
-            return;
-          }
-
-          if (typeof frame.ok !== 'boolean') {
-            failConnection(new BridgeError('Malformed response: ok must be a boolean', 'PROTOCOL_ERROR'));
+          try {
+            validateResponseFrame(frame);
+          } catch (err) {
+            failConnection(err);
             return;
           }
 
           const pending = activeRequests.get(frame.id);
           if (!pending) {
-            // Already cancelled, timed out, or unknown request. Safe to ignore.
+            // Late response for an already settled request (e.g. grace expired) or unknown request.
             continue;
           }
 
+          pending.state = 'settled';
           pending.cleanup();
           activeRequests.delete(frame.id);
 
           if (frame.ok === true) {
+            // Authoritative success resolves canonical result, even if cancellation was requested
             pending.resolve(frame.result);
           } else {
+            // Server error propagates actual error (including CANCELLED if server acknowledged cancel)
             const errCode = frame.error?.code || 'INTERNAL';
             const errMsg = frame.error?.message || 'Bridge request failed';
-            pending.reject(new BridgeError(errMsg, errCode, frame.error?.details));
+            pending.reject(new BridgeError(errMsg, errCode, { details: frame.error?.details }));
           }
         } else if (frame.type === 'event') {
-          if (frame.v !== 1) {
-            failConnection(new BridgeError(`Protocol version mismatch in event: ${frame.v}`, 'PROTOCOL_ERROR'));
-            return;
-          }
-
-          if (typeof frame.id !== 'string') {
-            failConnection(new BridgeError('Event missing valid string id', 'PROTOCOL_ERROR'));
+          try {
+            validateEventFrame(frame);
+          } catch (err) {
+            failConnection(err);
             return;
           }
 
@@ -220,12 +218,10 @@ export async function connectBridge({ pipePath, instanceId, signal, timeoutMs = 
     socket.on('error', (err) => {
       if (!isHandshaken) {
         cleanupHandshake();
-        const bridgeErr = new BridgeError(`Connection failed: ${err.message}`, 'DISCONNECTED');
-        bridgeErr.cause = err;
+        const bridgeErr = new BridgeError(`Connection failed: ${err.message}`, 'DISCONNECTED', { cause: err });
         reject(bridgeErr);
       } else {
-        const bridgeErr = new BridgeError(`Socket error: ${err.message}`, 'DISCONNECTED');
-        bridgeErr.cause = err;
+        const bridgeErr = new BridgeError(`Socket error: ${err.message}`, 'DISCONNECTED', { cause: err });
         failConnection(bridgeErr);
       }
     });
@@ -251,7 +247,7 @@ export async function connectBridge({ pipePath, instanceId, signal, timeoutMs = 
     }
 
     /**
-     * Executes a request over the bridge and awaits the terminal response.
+     * Executes a request over the bridge and awaits the authoritative terminal response.
      */
     async function request(method, params = {}, { signal: reqSignal, timeoutMs: reqTimeoutMs, onEvent } = {}) {
       if (isClosed || socket.destroyed || !socket.writable) {
@@ -262,8 +258,19 @@ export async function connectBridge({ pipePath, instanceId, signal, timeoutMs = 
         throw new BridgeError('method must be a non-empty string', 'INVALID_REQUEST');
       }
 
+      if (reqTimeoutMs !== undefined) {
+        validatePositiveFiniteNumber(reqTimeoutMs, 'timeoutMs');
+      }
+
+      if (activeRequests.size >= MAX_ACTIVE_REQUESTS) {
+        throw new BridgeError('Active request limit exceeded', 'RESOURCE_LIMIT_EXCEEDED');
+      }
+
+      // Pre-dispatch cancellation check (guaranteed not executed)
       if (reqSignal?.aborted) {
-        const err = new BridgeError(reqSignal.reason?.message || `Request '${method}' cancelled`, 'CANCELLED');
+        const err = new BridgeError(reqSignal.reason?.message || `Request '${method}' cancelled`, 'CANCELLED', {
+          causeCode: 'CANCELLED',
+        });
         err.name = 'AbortError';
         throw err;
       }
@@ -284,60 +291,104 @@ export async function connectBridge({ pipePath, instanceId, signal, timeoutMs = 
       }
 
       return new Promise((res, rej) => {
-        let timer = null;
-        let abortHandler = null;
-
-        const cleanup = () => {
-          if (timer) {
-            clearTimeout(timer);
-            timer = null;
-          }
-          if (abortHandler && reqSignal) {
-            reqSignal.removeEventListener('abort', abortHandler);
-            abortHandler = null;
-          }
+        const reqEntry = {
+          id,
+          method,
+          resolve: res,
+          reject: rej,
+          onEvent,
+          state: 'active', // 'active' | 'cancelling' | 'settled'
+          cancelCauseCode: null,
+          requestTimer: null,
+          cancelTimer: null,
+          abortListener: null,
+          cleanup() {
+            if (this.requestTimer) {
+              clearTimeout(this.requestTimer);
+              this.requestTimer = null;
+            }
+            if (this.cancelTimer) {
+              clearTimeout(this.cancelTimer);
+              this.cancelTimer = null;
+            }
+            if (this.abortListener && reqSignal) {
+              reqSignal.removeEventListener('abort', this.abortListener);
+              this.abortListener = null;
+            }
+          },
         };
 
-        if (typeof reqTimeoutMs === 'number' && reqTimeoutMs > 0) {
-          timer = setTimeout(() => {
-            sendCancelFrame(id);
-            cleanup();
+        const triggerCancel = (causeCode) => {
+          if (reqEntry.state !== 'active') return;
+          reqEntry.state = 'cancelling';
+          reqEntry.cancelCauseCode = causeCode;
+
+          // Clear request timeout & remove abort listener
+          if (reqEntry.requestTimer) {
+            clearTimeout(reqEntry.requestTimer);
+            reqEntry.requestTimer = null;
+          }
+          if (reqEntry.abortListener && reqSignal) {
+            reqSignal.removeEventListener('abort', reqEntry.abortListener);
+            reqEntry.abortListener = null;
+          }
+
+          // Send one cancel frame
+          sendCancelFrame(id);
+
+          // Wait up to cancelTimeoutMs for authoritative terminal response
+          reqEntry.cancelTimer = setTimeout(() => {
+            if (reqEntry.state !== 'cancelling') return;
+            reqEntry.state = 'settled';
+            reqEntry.cleanup();
             activeRequests.delete(id);
-            rej(new BridgeError(`Request '${method}' timed out after ${reqTimeoutMs}ms`, 'TIMEOUT'));
+
+            const outcomeErr = new BridgeError(
+              `Request '${method}' outcome unknown: cancellation grace timed out`,
+              'OUTCOME_UNKNOWN',
+              { causeCode }
+            );
+            rej(outcomeErr);
+            failConnection(outcomeErr);
+          }, cancelTimeoutMs);
+        };
+
+        if (typeof reqTimeoutMs === 'number') {
+          reqEntry.requestTimer = setTimeout(() => {
+            triggerCancel('TIMEOUT');
           }, reqTimeoutMs);
         }
 
         if (reqSignal) {
-          abortHandler = () => {
-            sendCancelFrame(id);
-            cleanup();
-            activeRequests.delete(id);
-            const err = new BridgeError(reqSignal.reason?.message || `Request '${method}' cancelled`, 'CANCELLED');
-            err.name = 'AbortError';
-            rej(err);
+          reqEntry.abortListener = () => {
+            triggerCancel('CANCELLED');
           };
-          reqSignal.addEventListener('abort', abortHandler, { once: true });
+          reqSignal.addEventListener('abort', reqEntry.abortListener, { once: true });
         }
 
-        activeRequests.set(id, {
-          resolve: res,
-          reject: rej,
-          cleanup,
-          onEvent,
-        });
+        activeRequests.set(id, reqEntry);
 
+        // Frame is now handed to the transport for dispatch
         socket.write(frame, (err) => {
           if (err) {
-            cleanup();
+            reqEntry.cleanup();
             activeRequests.delete(id);
-            rej(new BridgeError(`Failed to send request frame: ${err.message}`, 'DISCONNECTED'));
+            // Once handed to write, failure to complete write means outcome is unknown
+            rej(
+              new BridgeError(
+                `Failed to send request frame: ${err.message}; outcome unknown`,
+                'OUTCOME_UNKNOWN',
+                { causeCode: 'DISCONNECTED', cause: err }
+              )
+            );
           }
         });
       });
     }
 
     /**
-     * Idempotently and gracefully closes the bridge connection and rejects pending calls.
+     * Idempotently closes the bridge connection, waits for the actual socket 'close' event,
+     * and clears all timers, listeners, and pending calls.
      */
     async function close() {
       if (closePromise) {
@@ -347,34 +398,55 @@ export async function connectBridge({ pipePath, instanceId, signal, timeoutMs = 
       isClosed = true;
 
       closePromise = new Promise((res) => {
-        // Reject all pending calls
-        const closeError = new BridgeError('Bridge client was closed', 'CLOSED');
-        failAllPending(closeError);
+        // Dispatched in-flight calls during close must report OUTCOME_UNKNOWN (causeCode: 'CLOSED')
+        for (const req of activeRequests.values()) {
+          req.cleanup();
+          req.reject(
+            new BridgeError('Bridge client was closed; operation outcome unknown', 'OUTCOME_UNKNOWN', {
+              causeCode: 'CLOSED',
+            })
+          );
+        }
+        activeRequests.clear();
 
-        if (socket.destroyed || socket.closed) {
+        // If socket already fully closed, resolve immediately
+        if (socket.closed) {
           res();
           return;
         }
 
+        let forceDestroyTimer = null;
         let settled = false;
+
         const finish = () => {
           if (settled) return;
           settled = true;
+          if (forceDestroyTimer) {
+            clearTimeout(forceDestroyTimer);
+            forceDestroyTimer = null;
+          }
           socket.removeListener('close', finish);
-          socket.removeListener('error', finish);
+          socket.removeListener('error', onError);
           res();
         };
 
-        socket.once('close', finish);
-        socket.once('error', finish);
-
-        socket.end();
-
-        const forceDestroyTimer = setTimeout(() => {
+        const onError = () => {
+          // Do NOT resolve here; ensure destroy is called and await actual 'close'
           if (!socket.destroyed) {
             socket.destroy();
           }
-          finish();
+        };
+
+        socket.once('close', finish);
+        socket.on('error', onError);
+
+        socket.end();
+
+        forceDestroyTimer = setTimeout(() => {
+          if (!socket.destroyed) {
+            socket.destroy();
+          }
+          // Do NOT resolve here; wait for actual socket 'close' event!
         }, 1000);
         forceDestroyTimer.unref?.();
       });

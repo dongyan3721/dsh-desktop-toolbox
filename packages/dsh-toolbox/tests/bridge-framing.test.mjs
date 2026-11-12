@@ -6,7 +6,6 @@ import {
   BridgeError,
   HEADER_LENGTH,
   MAX_FRAME_LENGTH,
-  MIN_FRAME_LENGTH,
 } from '../src/bridge/index.js';
 
 test('encodeFrame produces valid 4-byte unsigned LE length header followed by UTF-8 JSON', () => {
@@ -21,10 +20,10 @@ test('encodeFrame produces valid 4-byte unsigned LE length header followed by UT
   assert.deepEqual(parsed, payload);
 });
 
-test('encodeFrame rejects out-of-bounds frames', () => {
+test('encodeFrame rejects invalid input types and out-of-bounds frames', () => {
   assert.throws(
     () => encodeFrame(''),
-    (err) => err instanceof BridgeError && err.code === 'PROTOCOL_ERROR'
+    (err) => err instanceof BridgeError && err.code === 'INVALID_REQUEST'
   );
 
   assert.throws(
@@ -32,10 +31,29 @@ test('encodeFrame rejects out-of-bounds frames', () => {
     (err) => err instanceof BridgeError && err.code === 'INVALID_REQUEST'
   );
 
-  const hugePayload = 'a'.repeat(MAX_FRAME_LENGTH + 1);
+  assert.throws(
+    () => encodeFrame([1, 2, 3]),
+    (err) => err instanceof BridgeError && err.code === 'INVALID_REQUEST'
+  );
+
+  assert.throws(
+    () => encodeFrame(null),
+    (err) => err instanceof BridgeError && err.code === 'INVALID_REQUEST'
+  );
+
+  const hugePayload = { big: 'a'.repeat(MAX_FRAME_LENGTH + 1) };
   assert.throws(
     () => encodeFrame(hugePayload),
     (err) => err instanceof BridgeError && err.code === 'PROTOCOL_ERROR'
+  );
+});
+
+test('encodeFrame rejects unpaired Unicode surrogates', () => {
+  // \uD800 without low surrogate
+  const badObj = { text: 'bad \uD800 string' };
+  assert.throws(
+    () => encodeFrame(badObj),
+    (err) => err instanceof BridgeError && err.code === 'INVALID_REQUEST' && err.message.includes('surrogate')
   );
 });
 
@@ -49,16 +67,17 @@ test('FrameDecoder handles single complete frame', () => {
   assert.deepEqual(decoded[0], payload);
 });
 
-test('FrameDecoder handles partial frames split across multiple chunks', () => {
+test('FrameDecoder handles partial frames split across multibyte UTF-8 boundaries', () => {
   const decoder = new FrameDecoder();
-  const payload = { v: 1, type: 'request', id: 'req-split', method: 'notes.search', params: { query: 'test' } };
+  // Chinese character '中' is 3 bytes in UTF-8: 0xE4 0xB8 0xAD
+  const payload = { v: 1, type: 'request', id: 'req-split', method: 'notes.search', params: { query: '中文测试' } };
   const frame = encodeFrame(payload);
 
-  // Split into 1-byte, 2-byte, 5-byte chunks
-  const chunk1 = frame.subarray(0, 1); // partial header
-  const chunk2 = frame.subarray(1, 3); // partial header
-  const chunk3 = frame.subarray(3, 8); // rest of header + start of payload
-  const chunk4 = frame.subarray(8); // rest of payload
+  // Split chunks right in the middle of UTF-8 characters and header
+  const chunk1 = frame.subarray(0, 2); // partial header
+  const chunk2 = frame.subarray(2, 4); // rest of header
+  const chunk3 = frame.subarray(4, 25); // partial payload (splitting multibyte)
+  const chunk4 = frame.subarray(25); // rest of payload
 
   assert.deepEqual(decoder.push(chunk1), []);
   assert.deepEqual(decoder.push(chunk2), []);
@@ -106,28 +125,65 @@ test('FrameDecoder rejects oversized frame header exceeding 4MiB', () => {
   );
 });
 
-test('FrameDecoder rejects malformed JSON payload', () => {
+test('FrameDecoder rejects invalid UTF-8 sequence with fatal decoder', () => {
   const decoder = new FrameDecoder();
-  const badJson = Buffer.from('{not-valid-json', 'utf8');
+  // 0xFF is an illegal UTF-8 byte
+  const invalidUtf8 = Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d]);
+  const frame = Buffer.alloc(4 + invalidUtf8.length);
+  frame.writeUInt32LE(invalidUtf8.length, 0);
+  invalidUtf8.copy(frame, 4);
+
+  assert.throws(
+    () => decoder.push(frame),
+    (err) => err instanceof BridgeError && err.code === 'PROTOCOL_ERROR' && err.message === 'Malformed frame payload: invalid UTF-8 sequence'
+  );
+});
+
+test('FrameDecoder rejects malformed JSON payload without echoing private contents', () => {
+  const decoder = new FrameDecoder();
+  const badJson = Buffer.from('{not-valid-json-secret-123', 'utf8');
   const frame = Buffer.alloc(4 + badJson.length);
   frame.writeUInt32LE(badJson.length, 0);
   badJson.copy(frame, 4);
 
   assert.throws(
     () => decoder.push(frame),
-    (err) => err instanceof BridgeError && err.code === 'PROTOCOL_ERROR' && err.message.includes('Malformed frame payload')
+    (err) =>
+      err instanceof BridgeError &&
+      err.code === 'PROTOCOL_ERROR' &&
+      err.message === 'Malformed frame payload: invalid JSON' &&
+      !err.message.includes('secret-123')
   );
 });
 
-test('FrameDecoder rejects non-object JSON payload', () => {
+test('FrameDecoder rejects JSON array envelopes', () => {
   const decoder = new FrameDecoder();
-  const badPayload = Buffer.from('42', 'utf8');
+  const arrayPayload = Buffer.from('[{"v":1,"type":"ready"}]', 'utf8');
+  const frame = Buffer.alloc(4 + arrayPayload.length);
+  frame.writeUInt32LE(arrayPayload.length, 0);
+  arrayPayload.copy(frame, 4);
+
+  assert.throws(
+    () => decoder.push(frame),
+    (err) =>
+      err instanceof BridgeError &&
+      err.code === 'PROTOCOL_ERROR' &&
+      err.message === 'Frame payload must be a JSON object'
+  );
+});
+
+test('FrameDecoder rejects non-object JSON primitive payloads', () => {
+  const decoder = new FrameDecoder();
+  const badPayload = Buffer.from('"just-a-string"', 'utf8');
   const frame = Buffer.alloc(4 + badPayload.length);
   frame.writeUInt32LE(badPayload.length, 0);
   badPayload.copy(frame, 4);
 
   assert.throws(
     () => decoder.push(frame),
-    (err) => err instanceof BridgeError && err.code === 'PROTOCOL_ERROR' && err.message.includes('expected JSON object')
+    (err) =>
+      err instanceof BridgeError &&
+      err.code === 'PROTOCOL_ERROR' &&
+      err.message === 'Frame payload must be a JSON object'
   );
 });

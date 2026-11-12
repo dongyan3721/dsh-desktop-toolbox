@@ -4,23 +4,52 @@ export const MIN_FRAME_LENGTH = 1;
 export const MAX_FRAME_LENGTH = 4 * 1024 * 1024; // 4 MiB (4,194,304 bytes)
 export const HEADER_LENGTH = 4;
 
+const textDecoder = new TextDecoder('utf-8', { fatal: true });
+const ESCAPED_SURROGATE_RE = /\\u[dD][89a-fA-F][0-9a-fA-F]{2}/;
+
+function containsUnpairedSurrogates(val) {
+  if (typeof val === 'string') {
+    return !val.isWellFormed();
+  }
+  if (typeof val === 'object' && val !== null) {
+    if (Array.isArray(val)) {
+      for (let i = 0; i < val.length; i++) {
+        if (containsUnpairedSurrogates(val[i])) return true;
+      }
+    } else {
+      for (const k of Object.keys(val)) {
+        if (containsUnpairedSurrogates(k) || containsUnpairedSurrogates(val[k])) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
- * Encodes a JSON-serializable message into a framed Buffer.
+ * Encodes a JSON object into a framed Buffer.
  * Frame structure: 4-byte unsigned little-endian length prefix followed by UTF-8 JSON.
  *
- * @param {any} message
+ * @param {object} message
  * @returns {Buffer}
  */
 export function encodeFrame(message) {
-  if (message === undefined) {
-    throw new BridgeError('Message cannot be undefined', 'INVALID_REQUEST');
+  if (typeof message !== 'object' || message === null || Array.isArray(message)) {
+    throw new BridgeError('Message must be a non-null JSON object', 'INVALID_REQUEST');
+  }
+
+  if (containsUnpairedSurrogates(message)) {
+    throw new BridgeError('Message contains unpaired Unicode surrogates', 'INVALID_REQUEST');
   }
 
   let jsonStr;
   try {
-    jsonStr = typeof message === 'string' ? message : JSON.stringify(message);
+    jsonStr = JSON.stringify(message);
   } catch (err) {
     throw new BridgeError(`Failed to serialize message to JSON: ${err.message}`, 'INVALID_REQUEST');
+  }
+
+  if (ESCAPED_SURROGATE_RE.test(jsonStr)) {
+    throw new BridgeError('Message contains unpaired Unicode surrogates', 'INVALID_REQUEST');
   }
 
   const payloadBuf = Buffer.from(jsonStr, 'utf8');
@@ -41,7 +70,7 @@ export function encodeFrame(message) {
 
 /**
  * Streaming decoder for 4-byte unsigned little-endian length prefixed UTF-8 JSON frames.
- * Supports partial and coalesced chunks.
+ * Enforces strict UTF-8 decoding, rejects array/non-object envelopes, and handles partial/coalesced frames.
  */
 export class FrameDecoder {
   constructor() {
@@ -53,7 +82,7 @@ export class FrameDecoder {
    *
    * @param {Buffer|Uint8Array} chunk
    * @returns {Array<object>} Decoded message objects
-   * @throws {BridgeError} On framing violations (zero/oversized length or malformed UTF-8/JSON)
+   * @throws {BridgeError} On framing violations (zero/oversized length, invalid UTF-8, malformed JSON, or non-object envelope)
    */
   push(chunk) {
     if (!chunk || chunk.length === 0) {
@@ -85,24 +114,25 @@ export class FrameDecoder {
       const payloadBuf = this.buffer.subarray(HEADER_LENGTH, totalLength);
       this.buffer = this.buffer.subarray(totalLength);
 
-      let parsed;
+      let text;
       try {
-        const text = payloadBuf.toString('utf8');
-        parsed = JSON.parse(text);
-      } catch (err) {
+        text = textDecoder.decode(payloadBuf);
+      } catch {
         this.buffer = Buffer.alloc(0);
-        throw new BridgeError(
-          `Malformed frame payload (UTF-8/JSON): ${err.message}`,
-          'PROTOCOL_ERROR'
-        );
+        throw new BridgeError('Malformed frame payload: invalid UTF-8 sequence', 'PROTOCOL_ERROR');
       }
 
-      if (typeof parsed !== 'object' || parsed === null) {
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
         this.buffer = Buffer.alloc(0);
-        throw new BridgeError(
-          'Malformed frame payload: expected JSON object',
-          'PROTOCOL_ERROR'
-        );
+        throw new BridgeError('Malformed frame payload: invalid JSON', 'PROTOCOL_ERROR');
+      }
+
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        this.buffer = Buffer.alloc(0);
+        throw new BridgeError('Frame payload must be a JSON object', 'PROTOCOL_ERROR');
       }
 
       frames.push(parsed);

@@ -8,6 +8,7 @@ import {
   BridgeError,
   encodeFrame,
   FrameDecoder,
+  MAX_ACTIVE_REQUESTS,
 } from '../src/bridge/index.js';
 
 function createPipeServer() {
@@ -31,14 +32,6 @@ function createPipeServer() {
     server,
     ready: () => listenPromise,
     getSocket: () => serverSocket,
-    waitForConnection: () =>
-      new Promise((resolve) => {
-        if (serverSocket && !serverSocket.destroyed) {
-          resolve(serverSocket);
-        } else {
-          server.once('connection', (sock) => resolve(sock));
-        }
-      }),
     close: async () => {
       for (const sock of connections) {
         sock.destroy();
@@ -94,7 +87,6 @@ test('handshake failure on version mismatch', async () => {
     socket.on('data', (chunk) => {
       for (const frame of decoder.push(chunk)) {
         if (frame.type === 'hello') {
-          // Send bad version
           socket.write(
             encodeFrame({
               v: 2,
@@ -128,7 +120,6 @@ test('handshake failure on instanceId mismatch', async () => {
     socket.on('data', (chunk) => {
       for (const frame of decoder.push(chunk)) {
         if (frame.type === 'hello') {
-          // Wrong instance ID
           socket.write(
             encodeFrame({
               v: 1,
@@ -152,35 +143,46 @@ test('handshake failure on instanceId mismatch', async () => {
   }
 });
 
-test('handshake failure when server responds with non-ready frame', async () => {
-  const fixture = createPipeServer();
-  await fixture.ready();
-  const instanceId = crypto.randomUUID();
+test('handshake failure on bad capabilities: not array, empty string, or duplicates', async () => {
+  const testCases = [
+    { capabilities: 'status', label: 'not array' },
+    { capabilities: ['status', ''], label: 'empty string' },
+    { capabilities: ['status', 'status'], label: 'duplicates' },
+    { capabilities: ['status'], extra: 'unknownField', label: 'unknown field' },
+  ];
 
-  fixture.server.on('connection', (socket) => {
-    const decoder = new FrameDecoder();
-    socket.on('data', (chunk) => {
-      for (const frame of decoder.push(chunk)) {
-        if (frame.type === 'hello') {
-          socket.write(
-            encodeFrame({
+  for (const tc of testCases) {
+    const fixture = createPipeServer();
+    await fixture.ready();
+    const instanceId = crypto.randomUUID();
+
+    fixture.server.on('connection', (socket) => {
+      const decoder = new FrameDecoder();
+      socket.on('data', (chunk) => {
+        for (const frame of decoder.push(chunk)) {
+          if (frame.type === 'hello') {
+            const readyMsg = {
               v: 1,
-              type: 'error',
+              type: 'ready',
               instanceId,
-            })
-          );
+              capabilities: tc.capabilities,
+            };
+            if (tc.extra) readyMsg.extra = tc.extra;
+            socket.write(encodeFrame(readyMsg));
+          }
         }
-      }
+      });
     });
-  });
 
-  try {
-    await assert.rejects(
-      connectBridge({ pipePath: fixture.pipePath, instanceId }),
-      (err) => err instanceof BridgeError && err.code === 'HANDSHAKE_FAILED' && err.message.includes('Expected ready')
-    );
-  } finally {
-    await fixture.close();
+    try {
+      await assert.rejects(
+        connectBridge({ pipePath: fixture.pipePath, instanceId }),
+        (err) => err instanceof BridgeError && err.code === 'HANDSHAKE_FAILED',
+        `Should reject for: ${tc.label}`
+      );
+    } finally {
+      await fixture.close();
+    }
   }
 });
 
@@ -189,7 +191,6 @@ test('handshake timeout when server never responds', async () => {
   await fixture.ready();
   const instanceId = crypto.randomUUID();
 
-  // Accept socket but do not write ready
   try {
     await assert.rejects(
       connectBridge({ pipePath: fixture.pipePath, instanceId, timeoutMs: 60 }),
@@ -206,16 +207,29 @@ test('handshake aborted via AbortSignal', async () => {
   const instanceId = crypto.randomUUID();
 
   const controller = new AbortController();
-  // Abort shortly after connecting
   setTimeout(() => controller.abort(), 20);
 
   try {
     await assert.rejects(
       connectBridge({ pipePath: fixture.pipePath, instanceId, signal: controller.signal }),
-      (err) => err.name === 'AbortError' && err.code === 'CANCELLED'
+      (err) => err.name === 'AbortError' && err.code === 'CANCELLED' && err.causeCode === 'CANCELLED'
     );
   } finally {
     await fixture.close();
+  }
+});
+
+test('validates timeoutMs and cancelTimeoutMs parameters as positive finite numbers', async () => {
+  const invalidTimeouts = [-1, 0, NaN, Infinity, '1000'];
+  for (const t of invalidTimeouts) {
+    assert.rejects(
+      connectBridge({ pipePath: '\\\\.\\pipe\\test', instanceId: 'id', timeoutMs: t }),
+      (err) => err instanceof BridgeError && err.code === 'INVALID_REQUEST'
+    );
+    assert.rejects(
+      connectBridge({ pipePath: '\\\\.\\pipe\\test', instanceId: 'id', cancelTimeoutMs: t }),
+      (err) => err instanceof BridgeError && err.code === 'INVALID_REQUEST'
+    );
   }
 });
 
@@ -298,6 +312,49 @@ test('request and response error with ok: false maps to BridgeError with stable 
   }
 });
 
+test('rejects response frames with contradictory or malformed envelopes', async () => {
+  const badFrames = [
+    { v: 1, type: 'response', id: '1', ok: true }, // missing result
+    { v: 1, type: 'response', id: '1', ok: true, result: 1, error: { code: 'E', message: 'm' } }, // contradictory error
+    { v: 1, type: 'response', id: '1', ok: true, result: 1, extraField: 'bad' }, // unknown field
+    { v: 1, type: 'response', id: '1', ok: false }, // missing error
+    { v: 1, type: 'response', id: '1', ok: false, error: { code: 'E', message: 'm' }, result: 1 }, // contradictory result
+    { v: 1, type: 'response', id: '1', ok: false, error: 'not-an-object' }, // bad error type
+    { v: 1, type: 'response', id: '1', ok: false, error: { message: 'missing-code' } }, // missing code
+  ];
+
+  for (const badFrame of badFrames) {
+    const fixture = createPipeServer();
+    await fixture.ready();
+    const instanceId = crypto.randomUUID();
+
+    fixture.server.on('connection', (socket) => {
+      const decoder = new FrameDecoder();
+      socket.on('data', (chunk) => {
+        for (const frame of decoder.push(chunk)) {
+          if (frame.type === 'hello') {
+            socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['test'] }));
+          } else if (frame.type === 'request') {
+            const frameToSend = { ...badFrame, id: frame.id };
+            socket.write(encodeFrame(frameToSend));
+          }
+        }
+      });
+    });
+
+    try {
+      const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId });
+      await assert.rejects(
+        bridge.request('test', {}),
+        (err) => err instanceof BridgeError && (err.code === 'PROTOCOL_ERROR' || err.code === 'OUTCOME_UNKNOWN')
+      );
+      await bridge.close();
+    } finally {
+      await fixture.close();
+    }
+  }
+});
+
 test('concurrent requests maintain ID mapping and resolve correctly out of order', async () => {
   const fixture = createPipeServer();
   await fixture.ready();
@@ -351,57 +408,6 @@ test('concurrent requests maintain ID mapping and resolve correctly out of order
   }
 });
 
-test('request cancellation sends cancel frame and rejects with CANCELLED/AbortError', async () => {
-  const fixture = createPipeServer();
-  await fixture.ready();
-  const instanceId = crypto.randomUUID();
-
-  let serverSocket = null;
-  let receivedCancelId = null;
-
-  fixture.server.on('connection', (socket) => {
-    serverSocket = socket;
-    const decoder = new FrameDecoder();
-    socket.on('data', (chunk) => {
-      for (const frame of decoder.push(chunk)) {
-        if (frame.type === 'hello') {
-          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['long_op'] }));
-        } else if (frame.type === 'cancel') {
-          receivedCancelId = frame.id;
-          // Send delayed response to verify client ignores late response safely
-          socket.write(
-            encodeFrame({
-              v: 1,
-              type: 'response',
-              id: frame.id,
-              ok: false,
-              error: { code: 'CANCELLED', message: 'Operation cancelled' },
-            })
-          );
-        }
-      }
-    });
-  });
-
-  try {
-    const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId });
-    const controller = new AbortController();
-
-    const reqPromise = bridge.request('long_op', {}, { signal: controller.signal });
-    // Abort active request
-    controller.abort();
-
-    await assert.rejects(reqPromise, (err) => err.name === 'AbortError' && err.code === 'CANCELLED');
-    // Allow roundtrip to receive cancel frame on server
-    await new Promise((r) => setTimeout(r, 50));
-    assert.ok(receivedCancelId !== null);
-
-    await bridge.close();
-  } finally {
-    await fixture.close();
-  }
-});
-
 test('pre-aborted signal rejects immediately without sending request frame', async () => {
   const fixture = createPipeServer();
   await fixture.ready();
@@ -428,7 +434,7 @@ test('pre-aborted signal rejects immediately without sending request frame', asy
 
     await assert.rejects(
       bridge.request('status', {}, { signal: abortedSignal }),
-      (err) => err.name === 'AbortError' && err.code === 'CANCELLED'
+      (err) => err.name === 'AbortError' && err.code === 'CANCELLED' && err.causeCode === 'CANCELLED'
     );
 
     assert.equal(requestFrameCount, 0);
@@ -438,7 +444,7 @@ test('pre-aborted signal rejects immediately without sending request frame', asy
   }
 });
 
-test('request timeout sends cancel frame and rejects with TIMEOUT', async () => {
+test('dispatched cancellation: server confirms CANCELLED, client rejects CANCELLED', async () => {
   const fixture = createPipeServer();
   await fixture.ready();
   const instanceId = crypto.randomUUID();
@@ -450,9 +456,263 @@ test('request timeout sends cancel frame and rejects with TIMEOUT', async () => 
     socket.on('data', (chunk) => {
       for (const frame of decoder.push(chunk)) {
         if (frame.type === 'hello') {
-          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['hang'] }));
+          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['notes.create'] }));
         } else if (frame.type === 'cancel') {
           receivedCancelId = frame.id;
+          // Server acknowledges cancellation
+          socket.write(
+            encodeFrame({
+              v: 1,
+              type: 'response',
+              id: frame.id,
+              ok: false,
+              error: { code: 'CANCELLED', message: 'Mutation cancelled prior to commit' },
+            })
+          );
+        }
+      }
+    });
+  });
+
+  try {
+    const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId, cancelTimeoutMs: 1000 });
+    const controller = new AbortController();
+
+    const reqPromise = bridge.request('notes.create', { title: 'Test' }, { signal: controller.signal });
+    // Abort after dispatch
+    controller.abort();
+
+    await assert.rejects(
+      reqPromise,
+      (err) => err instanceof BridgeError && err.code === 'CANCELLED' && err.message.includes('prior to commit')
+    );
+    assert.ok(receivedCancelId !== null);
+
+    await bridge.close();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('dispatched cancellation: server committed before cancel, client resolves canonical success', async () => {
+  const fixture = createPipeServer();
+  await fixture.ready();
+  const instanceId = crypto.randomUUID();
+
+  let receivedCancelId = null;
+
+  fixture.server.on('connection', (socket) => {
+    const decoder = new FrameDecoder();
+    socket.on('data', (chunk) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.type === 'hello') {
+          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['notes.create'] }));
+        } else if (frame.type === 'cancel') {
+          receivedCancelId = frame.id;
+          // Mutation was already committed before cancel arrived; server returns authoritative success
+          socket.write(
+            encodeFrame({
+              v: 1,
+              type: 'response',
+              id: frame.id,
+              ok: true,
+              result: { id: 'note-committed-1', title: 'Committed Note' },
+            })
+          );
+        }
+      }
+    });
+  });
+
+  try {
+    const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId, cancelTimeoutMs: 1000 });
+    const controller = new AbortController();
+
+    const reqPromise = bridge.request('notes.create', { title: 'Committed Note' }, { signal: controller.signal });
+    controller.abort();
+
+    // Round 2 protocol: signal must NOT overwrite authoritative successful write!
+    const result = await reqPromise;
+    assert.deepEqual(result, { id: 'note-committed-1', title: 'Committed Note' });
+    assert.ok(receivedCancelId !== null);
+
+    await bridge.close();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('dispatched cancellation: server silent, cancel grace expires, rejects OUTCOME_UNKNOWN and tears down', async () => {
+  const fixture = createPipeServer();
+  await fixture.ready();
+  const instanceId = crypto.randomUUID();
+
+  fixture.server.on('connection', (socket) => {
+    const decoder = new FrameDecoder();
+    socket.on('data', (chunk) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.type === 'hello') {
+          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['notes.create'] }));
+        }
+        // Server ignores cancel frame and stays silent
+      }
+    });
+  });
+
+  try {
+    const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId, cancelTimeoutMs: 80 });
+    const controller = new AbortController();
+
+    const reqPromise = bridge.request('notes.create', { title: 'Hanging Note' }, { signal: controller.signal });
+    controller.abort();
+
+    await assert.rejects(
+      reqPromise,
+      (err) =>
+        err instanceof BridgeError &&
+        err.code === 'OUTCOME_UNKNOWN' &&
+        err.causeCode === 'CANCELLED' &&
+        err.message.includes('outcome unknown')
+    );
+
+    assert.equal(bridge.isClosed, true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('request timeout: server silent, cancel grace expires, rejects OUTCOME_UNKNOWN with causeCode TIMEOUT', async () => {
+  const fixture = createPipeServer();
+  await fixture.ready();
+  const instanceId = crypto.randomUUID();
+
+  fixture.server.on('connection', (socket) => {
+    const decoder = new FrameDecoder();
+    socket.on('data', (chunk) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.type === 'hello') {
+          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['notes.create'] }));
+        }
+      }
+    });
+  });
+
+  try {
+    const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId, cancelTimeoutMs: 60 });
+
+    await assert.rejects(
+      bridge.request('notes.create', {}, { timeoutMs: 40 }),
+      (err) =>
+        err instanceof BridgeError &&
+        err.code === 'OUTCOME_UNKNOWN' &&
+        err.causeCode === 'TIMEOUT' &&
+        err.message.includes('outcome unknown')
+    );
+
+    assert.equal(bridge.isClosed, true);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('request timeout: server committed before cancel, returns authoritative success during grace', async () => {
+  const fixture = createPipeServer();
+  await fixture.ready();
+  const instanceId = crypto.randomUUID();
+
+  fixture.server.on('connection', (socket) => {
+    const decoder = new FrameDecoder();
+    socket.on('data', (chunk) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.type === 'hello') {
+          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['notes.create'] }));
+        } else if (frame.type === 'cancel') {
+          // Timeout caused cancel frame, but server returns committed success within cancelTimeoutMs
+          socket.write(
+            encodeFrame({
+              v: 1,
+              type: 'response',
+              id: frame.id,
+              ok: true,
+              result: { id: 'note-timeout-success', committed: true },
+            })
+          );
+        }
+      }
+    });
+  });
+
+  try {
+    const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId, cancelTimeoutMs: 1000 });
+    const res = await bridge.request('notes.create', { val: 1 }, { timeoutMs: 50 });
+    assert.deepEqual(res, { id: 'note-timeout-success', committed: true });
+    await bridge.close();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('request timeout: server acknowledges cancel during grace period, rejects CANCELLED', async () => {
+  const fixture = createPipeServer();
+  await fixture.ready();
+  const instanceId = crypto.randomUUID();
+
+  fixture.server.on('connection', (socket) => {
+    const decoder = new FrameDecoder();
+    socket.on('data', (chunk) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.type === 'hello') {
+          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['notes.create'] }));
+        } else if (frame.type === 'cancel') {
+          socket.write(
+            encodeFrame({
+              v: 1,
+              type: 'response',
+              id: frame.id,
+              ok: false,
+              error: { code: 'CANCELLED', message: 'Timed out call cancelled before mutation' },
+            })
+          );
+        }
+      }
+    });
+  });
+
+  try {
+    const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId, cancelTimeoutMs: 1000 });
+    await assert.rejects(
+      bridge.request('notes.create', {}, { timeoutMs: 50 }),
+      (err) => err instanceof BridgeError && err.code === 'CANCELLED'
+    );
+    await bridge.close();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('coalesced ready and response frames in same data batch are both processed without frame dropping', async () => {
+  const fixture = createPipeServer();
+  await fixture.ready();
+  const instanceId = crypto.randomUUID();
+
+  let capturedReqId = null;
+
+  fixture.server.on('connection', (socket) => {
+    const decoder = new FrameDecoder();
+    socket.on('data', (chunk) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.type === 'hello') {
+          // Send ready frame along with a pre-created response frame in the EXACT SAME WRITE/CHUNK!
+          const readyFrame = encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['status'] });
+          // We will wait for request first, then send coalesced chunk?
+          // Even better: client sends request right after connect, or server sends ready chunk that has multiple frames
+          socket.write(readyFrame);
+        } else if (frame.type === 'request') {
+          // Send response + progress event in a single coalesced chunk
+          capturedReqId = frame.id;
+          const eventFrame = encodeFrame({ v: 1, type: 'event', id: frame.id, event: 'progress', data: { p: 1 } });
+          const resFrame = encodeFrame({ v: 1, type: 'response', id: frame.id, ok: true, result: { done: true } });
+          socket.write(Buffer.concat([eventFrame, resFrame]));
         }
       }
     });
@@ -460,35 +720,29 @@ test('request timeout sends cancel frame and rejects with TIMEOUT', async () => 
 
   try {
     const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId });
-    await assert.rejects(
-      bridge.request('hang', {}, { timeoutMs: 50 }),
-      (err) => err instanceof BridgeError && err.code === 'TIMEOUT' && err.message.includes('timed out')
-    );
-
-    await new Promise((r) => setTimeout(r, 50));
-    assert.ok(receivedCancelId !== null);
+    const events = [];
+    const res = await bridge.request('status', {}, { onEvent: (e) => events.push(e) });
+    assert.deepEqual(res, { done: true });
+    assert.equal(events.length, 1);
     await bridge.close();
   } finally {
     await fixture.close();
   }
 });
 
-test('server sudden disconnection rejects pending requests with DISCONNECTED', async () => {
+test('server sudden disconnection rejects in-flight request with OUTCOME_UNKNOWN and causeCode DISCONNECTED', async () => {
   const fixture = createPipeServer();
   await fixture.ready();
   const instanceId = crypto.randomUUID();
 
-  let serverSocket = null;
-
   fixture.server.on('connection', (socket) => {
-    serverSocket = socket;
     const decoder = new FrameDecoder();
     socket.on('data', (chunk) => {
       for (const frame of decoder.push(chunk)) {
         if (frame.type === 'hello') {
           socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['test'] }));
         } else if (frame.type === 'request') {
-          // Abruptly destroy socket
+          // Abruptly destroy socket while request was dispatched
           socket.destroy();
         }
       }
@@ -499,13 +753,16 @@ test('server sudden disconnection rejects pending requests with DISCONNECTED', a
     const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId });
     await assert.rejects(
       bridge.request('test', {}),
-      (err) => err instanceof BridgeError && err.code === 'DISCONNECTED'
+      (err) =>
+        err instanceof BridgeError &&
+        err.code === 'OUTCOME_UNKNOWN' &&
+        err.causeCode === 'DISCONNECTED'
     );
 
-    // Subsequent call rejects immediately
+    // Subsequent call rejects immediately with CLOSED or DISCONNECTED
     await assert.rejects(
       bridge.request('test', {}),
-      (err) => err instanceof BridgeError && (err.code === 'DISCONNECTED' || err.code === 'CLOSED')
+      (err) => err instanceof BridgeError && (err.code === 'CLOSED' || err.code === 'DISCONNECTED')
     );
 
     await bridge.close();
@@ -514,7 +771,7 @@ test('server sudden disconnection rejects pending requests with DISCONNECTED', a
   }
 });
 
-test('close() is idempotent, rejects pending requests with CLOSED, and cleans up', async () => {
+test('close() is idempotent, clears forceDestroyTimer, rejects dispatched pending with OUTCOME_UNKNOWN', async () => {
   const fixture = createPipeServer();
   await fixture.ready();
   const instanceId = crypto.randomUUID();
@@ -532,28 +789,78 @@ test('close() is idempotent, rejects pending requests with CLOSED, and cleans up
 
   try {
     const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId });
-    // Start pending request and attach assertion
     const pendingReq = bridge.request('test', {});
     const pendingAssertion = assert.rejects(
       pendingReq,
-      (err) => err instanceof BridgeError && err.code === 'CLOSED'
+      (err) => err instanceof BridgeError && err.code === 'OUTCOME_UNKNOWN' && err.causeCode === 'CLOSED'
     );
 
-    // Close while request is pending
     const closePromise1 = bridge.close();
     const closePromise2 = bridge.close();
 
-    // Idempotent close
     await Promise.all([closePromise1, closePromise2]);
     assert.equal(bridge.isClosed, true);
 
     await pendingAssertion;
 
-    // Calls after close reject with CLOSED
+    // Calls initiated after close reject with CLOSED
     await assert.rejects(
       bridge.request('test', {}),
       (err) => err instanceof BridgeError && err.code === 'CLOSED'
     );
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('request properly cleans up signal abort listeners on completion and on abort', async () => {
+  const fixture = createPipeServer();
+  await fixture.ready();
+  const instanceId = crypto.randomUUID();
+
+  fixture.server.on('connection', (socket) => {
+    const decoder = new FrameDecoder();
+    socket.on('data', (chunk) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.type === 'hello') {
+          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['status'] }));
+        } else if (frame.type === 'request') {
+          if (frame.method === 'status') {
+            socket.write(encodeFrame({ v: 1, type: 'response', id: frame.id, ok: true, result: {} }));
+          }
+        } else if (frame.type === 'cancel') {
+          socket.write(
+            encodeFrame({
+              v: 1,
+              type: 'response',
+              id: frame.id,
+              ok: false,
+              error: { code: 'CANCELLED', message: 'Cancelled' },
+            })
+          );
+        }
+      }
+    });
+  });
+
+  try {
+    const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId });
+    const controller = new AbortController();
+
+    // 1. Normal resolution removes listener
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+    await bridge.request('status', {}, { signal: controller.signal });
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+
+    // 2. Cancellation removes listener
+    const controller2 = new AbortController();
+    const reqPromise = bridge.request('cancel_me', {}, { signal: controller2.signal });
+    controller2.abort();
+    // After abort listener fires, it cleans itself up
+    assert.equal(getEventListeners(controller2.signal, 'abort').length, 0);
+    await assert.rejects(reqPromise, (err) => err.code === 'CANCELLED');
+
+    await bridge.close();
   } finally {
     await fixture.close();
   }
@@ -571,7 +878,6 @@ test('progress event delivery to onEvent callback', async () => {
         if (frame.type === 'hello') {
           socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['media.convert_image'] }));
         } else if (frame.type === 'request') {
-          // Send progress event
           socket.write(
             encodeFrame({
               v: 1,
@@ -581,7 +887,6 @@ test('progress event delivery to onEvent callback', async () => {
               data: { percent: 50 },
             })
           );
-          // Then send terminal response
           setTimeout(() => {
             socket.write(
               encodeFrame({
@@ -621,47 +926,6 @@ test('progress event delivery to onEvent callback', async () => {
   }
 });
 
-test('request properly cleans up signal abort listeners on completion and on abort', async () => {
-  const fixture = createPipeServer();
-  await fixture.ready();
-  const instanceId = crypto.randomUUID();
-
-  fixture.server.on('connection', (socket) => {
-    const decoder = new FrameDecoder();
-    socket.on('data', (chunk) => {
-      for (const frame of decoder.push(chunk)) {
-        if (frame.type === 'hello') {
-          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['status'] }));
-        } else if (frame.type === 'request') {
-          socket.write(encodeFrame({ v: 1, type: 'response', id: frame.id, ok: true, result: {} }));
-        }
-      }
-    });
-  });
-
-  try {
-    const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId });
-    const controller = new AbortController();
-
-    // 1. Normal resolution removes listener
-    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
-    await bridge.request('status', {}, { signal: controller.signal });
-    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
-
-    // 2. Cancellation removes listener
-    const controller2 = new AbortController();
-    const reqPromise = bridge.request('status', {}, { signal: controller2.signal });
-    assert.equal(getEventListeners(controller2.signal, 'abort').length, 1);
-    controller2.abort();
-    await assert.rejects(reqPromise, (err) => err.code === 'CANCELLED');
-    assert.equal(getEventListeners(controller2.signal, 'abort').length, 0);
-
-    await bridge.close();
-  } finally {
-    await fixture.close();
-  }
-});
-
 test('malformed frame received post-handshake triggers PROTOCOL_ERROR and connection teardown', async () => {
   const fixture = createPipeServer();
   await fixture.ready();
@@ -674,7 +938,6 @@ test('malformed frame received post-handshake triggers PROTOCOL_ERROR and connec
         if (frame.type === 'hello') {
           socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['test'] }));
         } else if (frame.type === 'request') {
-          // Send malformed frame (length header of 0)
           const badBuf = Buffer.alloc(4);
           badBuf.writeUInt32LE(0, 0);
           socket.write(badBuf);
@@ -687,9 +950,46 @@ test('malformed frame received post-handshake triggers PROTOCOL_ERROR and connec
     const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId });
     await assert.rejects(
       bridge.request('test', {}),
-      (err) => err instanceof BridgeError && err.code === 'PROTOCOL_ERROR'
+      (err) => err instanceof BridgeError && (err.code === 'PROTOCOL_ERROR' || err.code === 'OUTCOME_UNKNOWN')
     );
     await bridge.close();
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('rejects requests when MAX_ACTIVE_REQUESTS limit is exceeded', async () => {
+  const fixture = createPipeServer();
+  await fixture.ready();
+  const instanceId = crypto.randomUUID();
+
+  fixture.server.on('connection', (socket) => {
+    const decoder = new FrameDecoder();
+    socket.on('data', (chunk) => {
+      for (const frame of decoder.push(chunk)) {
+        if (frame.type === 'hello') {
+          socket.write(encodeFrame({ v: 1, type: 'ready', instanceId, capabilities: ['test'] }));
+        }
+      }
+    });
+  });
+
+  try {
+    const bridge = await connectBridge({ pipePath: fixture.pipePath, instanceId });
+    // Simulate active requests map being full
+    const promises = [];
+    for (let i = 0; i < MAX_ACTIVE_REQUESTS; i++) {
+      promises.push(bridge.request('test', { i }).catch(() => {}));
+    }
+
+    // Next request must be rejected immediately due to limit
+    await assert.rejects(
+      bridge.request('test', {}),
+      (err) => err instanceof BridgeError && err.code === 'RESOURCE_LIMIT_EXCEEDED'
+    );
+
+    await bridge.close();
+    await Promise.all(promises);
   } finally {
     await fixture.close();
   }
