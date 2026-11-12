@@ -2,7 +2,9 @@
 
 用户已授权你在本机参与迁移。先读根 AGENTS.md、实施基线、桥协议和迁移计划。直接实现、测试，不止写计划。
 
-你的唯一写入范围：`native/YourAllIn1Helper/crates/dsh-bridge/**`、原生副本根 `Cargo.toml` / `Cargo.lock`（Cargo 生成）及 `docs/handoffs/CURSOR.md`。其他源码只读，其他 agent 正并行修改 Host，不能改根工作区 package.json、脚本、协议或插件入口。不要提交 Git。
+实际工作树：`D:\Code\dsh-toolbox\.worktrees\cursor`，分支 `agent/cursor-native`。后续所有路径相对此工作树；主目录只读。应用即使仍显示原项目，也必须用上述绝对路径编辑并在此目录执行命令。以本段替代旧提示中的共享工作区说明。
+
+你的唯一写入范围：`native/YourAllIn1Helper/crates/dsh-bridge/**`、原生副本根 `Cargo.toml` / `Cargo.lock`（Cargo 生成）及 `docs/handoffs/CURSOR.md`。其他源码只读，其他 agent 正并行修改 Host，不能改根工作区 package.json、脚本、协议或插件入口。可只提交自己的分配文件到自己的分支，不合并 main。
 
 目标：制作可启动的 Windows 原生 Named Pipe 服务 `dsh-toolbox-native`，复用原 AppKernel 和 sticky-note/media 模块。先完成协议握手、status、独占数据锁、断线/父进程退出清理，再按实际能力实现 notes.create/search/update 与图片转换。没有完成的方法不要放进 capabilities。优先交付可测试的 status+便笺真实持久化，媒体遇阻写明原因，不做假成功。
 

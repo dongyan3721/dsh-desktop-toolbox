@@ -2,7 +2,9 @@
 
 用户已授权你在本机参与迁移。先读根 AGENTS.md、实施基线、BRIDGE_PROTOCOL.md 和迁移计划。直接实现、测试，不止写计划。
 
-唯一写入范围：`packages/dsh-toolbox/src/features/**`、`packages/dsh-toolbox/tests/features*.test.mjs`、`docs/handoffs/ZED.md`。不要改插件入口 src/index.js、根 manifest/锁文件、bridge、原生源码或共享协议。不要提交 Git。
+实际工作树：`D:\Code\dsh-toolbox\.worktrees\zed`，分支 `agent/zed-features`。后续所有路径相对此工作树；主目录只读。应用即使仍显示原项目，也必须用上述绝对路径编辑并在此目录执行命令。以本段替代旧提示中的共享工作区说明。此前已写的 features 和测试会由 Codex 原样迁入此处，不要从主目录重新覆盖。
+
+唯一写入范围：`packages/dsh-toolbox/src/features/**`、`packages/dsh-toolbox/tests/features*.test.mjs`、`docs/handoffs/ZED.md`。不要改插件入口 src/index.js、根 manifest/锁文件、bridge、原生源码或共享协议。可只提交自己的分配文件到自己的分支，不合并 main。
 
 实现 `features/notes.js` 导出 createNoteTools(bridge)，`features/images.js` 导出 createImageTools(bridge,{authorizePaths})。使用真实 defineTool/Schema DSL（查本机 SDK README 与实现，object 必须有 additionalProperties:false）；工厂返回工具定义数组，由 Codex 后续注册。
 

@@ -24,3 +24,18 @@ test('built plugin loads through Cordis Loader, validates cancellation and unloa
     await ctx.fiber.dispose();
   }
 });
+
+test('installed tarball loads and executes without importing plugin source', async () => {
+  const moduleUrl = new URL('../runtime/dsh-dev/profiles/toolbox-prototype/node_modules/dsh-toolbox/lib/index.js', import.meta.url).href;
+  const { ctx, id } = await createPrototypeContext({ moduleUrl });
+  try {
+    const batch = await ctx.tools.execute({ calls: [{ id: 'installed-status', name: 'toolbox_status', arguments: '{}' }], signal: new AbortController().signal });
+    assert.equal(batch.results[0].result.isError, false);
+    assert.equal(batch.results[0].result.value.phase, 'prototype');
+    await ctx.loader.resolve(id).fiber.dispose();
+    ctx.loader.remove(id);
+    assert.equal(ctx.tools.definitions().some(tool => tool.name === 'toolbox_status'), false);
+  } finally {
+    await ctx.fiber.dispose();
+  }
+});
