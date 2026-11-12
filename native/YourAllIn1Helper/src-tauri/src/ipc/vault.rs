@@ -1,0 +1,306 @@
+//! 密码本专用异步 IPC；KDF、数据库与加解密均不进入同步 AppKit 调用链。
+use super::*;
+use mod_password_vault::{LockReason, PasswordPolicy, VaultEntryInput, MODULE_ID};
+use zeroize::Zeroizing;
+
+#[derive(Deserialize)]
+struct InitializeArgs {
+    password: String,
+    confirmation: String,
+}
+
+#[derive(Deserialize)]
+struct PasswordArgs {
+    password: String,
+}
+
+#[derive(Deserialize)]
+struct ChangePasswordArgs {
+    old_password: String,
+    new_password: String,
+}
+
+#[derive(Deserialize)]
+struct EntryArgs {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct HotpAdvanceArgs {
+    id: String,
+    expected_counter: u64,
+}
+
+#[derive(Deserialize)]
+struct DeleteArgs {
+    id: String,
+    expected_version: u64,
+}
+
+#[derive(Deserialize)]
+struct UpsertArgs {
+    id: Option<String>,
+    expected_version: Option<u64>,
+    input: VaultEntryInput,
+}
+
+#[derive(Deserialize)]
+struct ListArgs {
+    search: Option<String>,
+    cursor: Option<String>,
+    limit: Option<u32>,
+}
+
+#[derive(Deserialize)]
+struct GenerateArgs {
+    policy: PasswordPolicy,
+}
+
+#[derive(Deserialize)]
+struct BiometricArgs {
+    enabled: bool,
+}
+
+fn parse<T: for<'de> Deserialize<'de>>(args: Value) -> Result<T, String> {
+    serde_json::from_value(args).map_err(|error| format!("Invalid vault IPC payload: {}", error))
+}
+
+fn vault_error(error: mod_password_vault::VaultError) -> String {
+    error.to_string()
+}
+
+/// 后台只持有不含明文的所有权凭证。清理时由系统序号判断，不比较秘密内容。
+struct PendingSecretCopy {
+    clipboard: Arc<dyn os_hal::ClipboardOwnership>,
+    token: os_hal::ClipboardWriteToken,
+    _lease: app_core::ClipboardSuppressionLease,
+}
+
+impl Drop for PendingSecretCopy {
+    fn drop(&mut self) {
+        if let Err(error) = self.clipboard.clear_if_unchanged(&self.token) {
+            tracing::warn!(%error, "Failed to expire vault clipboard ownership");
+        }
+    }
+}
+
+fn write_secret_with_lease(
+    ctx: &app_core::ModuleContext,
+    clipboard: Arc<dyn os_hal::ClipboardOwnership>,
+    secret: &str,
+) -> Result<PendingSecretCopy, String> {
+    let lease = ctx.event_bus.acquire_clipboard_suppression(
+        "password_vault",
+        "secret_copy",
+        std::time::Duration::from_secs(35),
+    );
+    let token = clipboard
+        .write_concealed_text(secret)
+        .map_err(|error| error.to_string())?;
+    Ok(PendingSecretCopy {
+        clipboard,
+        token,
+        _lease: lease,
+    })
+}
+
+/// 租约覆盖整个秘密停留窗口；线程创建失败时 guard 也会立即按所有权清理。
+fn copy_secret_with_lease(
+    ctx: &app_core::ModuleContext,
+    clipboard: Arc<dyn os_hal::ClipboardOwnership>,
+    secret: &str,
+) -> Result<os_hal::ClipboardWriteToken, String> {
+    let pending = write_secret_with_lease(ctx, clipboard, secret)?;
+    let token = pending.token;
+    std::thread::Builder::new()
+        .name("vault-clipboard-expiry".into())
+        .spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            drop(pending);
+        })
+        .map(|_| token)
+        .map_err(|error| error.to_string())
+}
+
+fn to_json(value: impl Serialize) -> Result<Value, String> {
+    serde_json::to_value(value).map_err(|error| error.to_string())
+}
+
+impl DesktopHost {
+    async fn dispatch_vault(&self, cmd: &str, args: Value) -> Result<Value, String> {
+        // 外层模块开关只负责路由门禁；服务在每个敏感操作中再次检查 accepting/locked/epoch。
+        let (service, ctx) = self
+            .kernel
+            .registry()
+            .with_enabled(MODULE_ID, || {
+                Ok((self.password_vault.service(), self.kernel.context().clone()))
+            })
+            .map_err(|error| error.to_string())?;
+        match cmd {
+            "vault_get_status" => to_json(service.status()),
+            "vault_lock" => to_json(service.lock(LockReason::Manual)),
+            "vault_initialize" => {
+                let args = parse::<InitializeArgs>(args)?;
+                let status = service
+                    .initialize(
+                        ctx,
+                        Zeroizing::new(args.password),
+                        Zeroizing::new(args.confirmation),
+                    )
+                    .await
+                    .map_err(vault_error)?;
+                to_json(status)
+            }
+            "vault_unlock_biometric" => {
+                let status = service.unlock_biometric(ctx).await.map_err(vault_error)?;
+                to_json(status)
+            }
+            "vault_set_biometric_enabled" => {
+                let args = parse::<BiometricArgs>(args)?;
+                let status = service
+                    .set_biometric_enabled(ctx, args.enabled)
+                    .await
+                    .map_err(vault_error)?;
+                to_json(status)
+            }
+            "vault_unlock_master_password" => {
+                let args = parse::<PasswordArgs>(args)?;
+                let status = service
+                    .unlock_master_password(ctx, Zeroizing::new(args.password))
+                    .await
+                    .map_err(vault_error)?;
+                to_json(status)
+            }
+            "vault_list_entries" => {
+                let args = parse::<ListArgs>(args)?;
+                let page = service
+                    .list_entries(ctx, args.search, args.cursor, args.limit)
+                    .await
+                    .map_err(vault_error)?;
+                to_json(page)
+            }
+            "vault_get_entry" => {
+                let args = parse::<EntryArgs>(args)?;
+                let entry = service
+                    .get_entry(ctx, &args.id)
+                    .await
+                    .map_err(vault_error)?;
+                to_json(entry)
+            }
+            "vault_reveal_password" => {
+                let args = parse::<EntryArgs>(args)?;
+                let password = service
+                    .reveal_password(ctx, &args.id)
+                    .await
+                    .map_err(vault_error)?;
+                to_json(password)
+            }
+            "vault_copy_password" => {
+                let args = parse::<EntryArgs>(args)?;
+                let password = service
+                    .reveal_password(ctx.clone(), &args.id)
+                    .await
+                    .map_err(vault_error)?;
+                let clipboard = self
+                    .vault_clipboard
+                    .read()
+                    .clone()
+                    .ok_or_else(|| "secure clipboard is unavailable".to_string())?;
+                let mut last_copy = self.last_vault_copy.lock();
+                *last_copy = Some(copy_secret_with_lease(&ctx, clipboard, password.as_str())?);
+                Ok(json!({ "copied": true, "clear_after_secs": 30 }))
+            }
+            "vault_totp_code" => {
+                let args = parse::<EntryArgs>(args)?;
+                let code = service
+                    .otp_code(ctx, &args.id)
+                    .await
+                    .map_err(vault_error)?;
+                to_json(code)
+            }
+            "vault_hotp_advance" => {
+                let args = parse::<HotpAdvanceArgs>(args)?;
+                let result = service
+                    .otp_advance_counter(ctx, &args.id, args.expected_counter)
+                    .await
+                    .map_err(vault_error)?;
+                to_json(result)
+            }
+            "vault_copy_totp" => {
+                let args = parse::<EntryArgs>(args)?;
+                let code = service
+                    .otp_code(ctx.clone(), &args.id)
+                    .await
+                    .map_err(vault_error)?;
+                let clipboard = self
+                    .vault_clipboard
+                    .read()
+                    .clone()
+                    .ok_or_else(|| "secure clipboard is unavailable".to_string())?;
+                let mut last_copy = self.last_vault_copy.lock();
+                *last_copy = Some(copy_secret_with_lease(&ctx, clipboard, code.code.as_str())?);
+                Ok(json!({ "copied": true, "clear_after_secs": 30 }))
+            }
+            "vault_upsert_entry" => {
+                let args = parse::<UpsertArgs>(args)?;
+                let result = match args.id {
+                    Some(id) => {
+                        let expected = args
+                            .expected_version
+                            .ok_or_else(|| "expected_version is required for update".to_string())?;
+                        service
+                            .update_entry(ctx, &id, expected, args.input)
+                            .await
+                            .map_err(vault_error)?
+                    }
+                    None => service
+                        .create_entry(ctx, args.input)
+                        .await
+                        .map_err(vault_error)?,
+                };
+                to_json(result)
+            }
+            "vault_delete_entry" => {
+                let args = parse::<DeleteArgs>(args)?;
+                service
+                    .delete_entry(ctx, &args.id, args.expected_version)
+                    .await
+                    .map_err(vault_error)?;
+                Ok(json!({ "deleted": true }))
+            }
+            "vault_generate_password" => {
+                let args = parse::<GenerateArgs>(args)?;
+                let generated = service
+                    .generate_password(args.policy)
+                    .map_err(vault_error)?;
+                to_json(generated.as_str())
+            }
+            "vault_change_master_password" => {
+                let args = parse::<ChangePasswordArgs>(args)?;
+                let status = service
+                    .change_master_password(
+                        ctx,
+                        Zeroizing::new(args.old_password),
+                        Zeroizing::new(args.new_password),
+                    )
+                    .await
+                    .map_err(vault_error)?;
+                to_json(status)
+            }
+            _ => Err(
+                "feature is disabled in M1: unknown or unavailable vault IPC command".to_string(),
+            ),
+        }
+    }
+
+    pub async fn invoke_vault_ipc(&self, cmd: &str, args: Value) -> IpcResponse {
+        match self.dispatch_vault(cmd, args).await {
+            Ok(value) => IpcResponse::success(value),
+            Err(error) => IpcResponse::err(error),
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "../../tests/unit/vault_clipboard.rs"]
+mod tests;

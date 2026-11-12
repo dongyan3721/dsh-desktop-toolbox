@@ -1,0 +1,38 @@
+{
+  "repository": "https://github.com/moneka123/deepseek-harness-plugin-dev-guide",
+  "commit": "f224099dce05f47c931d5e70d09ace9627607401",
+  "retrievedDate": "2026-11-12",
+  "harnessDocumentationBaseline": "3bbc502cd2b122fe7d1c4a4562ae8cd51ca1c1a7",
+  "files": [
+    {
+      "name": "README.md",
+      "source": "https://raw.githubusercontent.com/moneka123/deepseek-harness-plugin-dev-guide/f224099dce05f47c931d5e70d09ace9627607401/README.md",
+      "sha256": "d891a1c23221749d5759fee660503b73ce935a31f6bfd00a71448e136646f930"
+    },
+    {
+      "name": "AGENTS.md",
+      "source": "https://raw.githubusercontent.com/moneka123/deepseek-harness-plugin-dev-guide/f224099dce05f47c931d5e70d09ace9627607401/AGENTS.md",
+      "sha256": "f1f141ded20ac8adcb824d72bd5473273b93c2d5b46f2d5a24bb4bfb71fb8b63"
+    },
+    {
+      "name": "REFERENCE.md",
+      "source": "https://raw.githubusercontent.com/moneka123/deepseek-harness-plugin-dev-guide/f224099dce05f47c931d5e70d09ace9627607401/REFERENCE.md",
+      "sha256": "6f3a1b72d4d64c99f22a495103e80c0fe53faff23e4043513f4bbb2591232bf8"
+    },
+    {
+      "name": "INSTALLATION.md",
+      "source": "https://raw.githubusercontent.com/moneka123/deepseek-harness-plugin-dev-guide/f224099dce05f47c931d5e70d09ace9627607401/INSTALLATION.md",
+      "sha256": "70e5a225eead1e91a6ab5f38b68ffa81be243971c2adb9762115ddb47fb226a7"
+    },
+    {
+      "name": "DYNAMIC-PLUGINS.md",
+      "source": "https://raw.githubusercontent.com/moneka123/deepseek-harness-plugin-dev-guide/f224099dce05f47c931d5e70d09ace9627607401/DYNAMIC-PLUGINS.md",
+      "sha256": "6d15a8645d4e7cd94283d16c5cb5c09d5da34a5da508f2f176227618d253b043"
+    },
+    {
+      "name": "LICENSE",
+      "source": "https://raw.githubusercontent.com/moneka123/deepseek-harness-plugin-dev-guide/f224099dce05f47c931d5e70d09ace9627607401/LICENSE",
+      "sha256": "4ef46372321ab9164e3c2cecb5be00cb7e6272b81e434cb4203caafce175b843"
+    }
+  ]
+}

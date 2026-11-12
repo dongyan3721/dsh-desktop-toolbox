@@ -1,0 +1,10 @@
+{
+  "name": "dsh-toolbox-workspace",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/prototype.test.mjs",
+    "demo": "node scripts/demo.mjs"
+  }
+}

@@ -1,0 +1,313 @@
+/**
+ * 增强截图前端 API：小数据走统一 JSON IPC，冻结帧/贴图/标注层走 Tauri 二进制命令。
+ */
+import { invokeIpc, type IpcResponse } from './ipc';
+import type { Rect } from '../utils/screenshot/geometry';
+import { encodeExportMetadata } from '../utils/screenshot/save';
+
+export type CapabilityState =
+  | { state: 'available' }
+  | { state: 'disabled' }
+  | { state: 'unavailable'; reason: string };
+
+export interface ScreenshotSessionInfo {
+  session_id: string;
+  frame_width: number;
+  frame_height: number;
+  frame_byte_length: number;
+  device_pixel_ratio: number;
+  logical_width: number;
+  logical_height: number;
+  monitor_id: number;
+  monitor_name: string;
+  window_region_count: number;
+  capabilities: {
+    window_tree: CapabilityState;
+    ui_elements: CapabilityState;
+    visual_edges: CapabilityState;
+  };
+  settings: {
+    manual_selection: boolean;
+    smart_regions: boolean;
+    wheel_expand: boolean;
+    magnifier: boolean;
+    default_color: string;
+    default_stroke_width: number;
+  };
+  target_mode?: string | null;
+  created_at: number;
+  /** 触发意图：`ocr` 时 Enter 识别文字而非复制图片。 */
+  intent: 'capture' | 'ocr';
+}
+
+/** 选区文字识别结果；行坐标为相对选区左上角的帧像素。 */
+export interface OcrOutcome {
+  backend: string;
+  text: string;
+  lines: Array<{ text: string; confidence: number; x: number; y: number; width: number; height: number }>;
+  elapsed_ms: number;
+  width: number;
+  height: number;
+}
+
+export interface DetectedRegion extends Rect {
+  region_id: number;
+  parent_id: number | null;
+  level: 'ui_element' | 'container_panel' | 'top_level_window' | 'monitor';
+  label: string | null;
+}
+
+export interface PinSummary {
+  pin_id: string;
+  label: string;
+  pixel_width: number;
+  pixel_height: number;
+  logical_width: number;
+  logical_height: number;
+  opacity: number;
+  png_byte_length: number;
+  created_at: number;
+}
+
+export type ExportAction = 'copy' | 'save' | 'pin';
+
+export interface ExportOutcome {
+  action: ExportAction;
+  width: number;
+  height: number;
+  saved_path: string | null;
+  copied: boolean;
+  clipboard_error: string | null;
+  pin: PinSummary | null;
+  at: number;
+}
+
+export interface ScreenshotFailure {
+  kind: 'permission_denied' | 'unsupported' | 'not_found' | 'native_call_failed' | 'internal';
+  capability: string | null;
+  message: string;
+  guidance: string | null;
+  at: number;
+}
+
+export interface ScreenshotSettings {
+  save_directory: string | null;
+  file_name_prefix: string;
+  copy_after_save: boolean;
+  default_color: string;
+  default_stroke_width: number;
+  default_pin_opacity: number;
+  max_pins: number;
+  [extra: string]: unknown;
+}
+
+export interface ScreenshotStatus {
+  session: { session_id: string; monitor_name: string; overlay_visible: boolean; created_at: number } | null;
+  pins: PinSummary[];
+  last_export: ExportOutcome | null;
+  last_error: ScreenshotFailure | null;
+  permission: { granted: boolean; message: string | null; guidance: string | null };
+  shortcut: { action_id: string; registered: boolean; display_label: string | null; logical_hotkey: string | null };
+  native_shortcut_error: string | null;
+  save_directory: string;
+  settings: ScreenshotSettings;
+}
+
+export interface OverlayFlags {
+  enable_manual_box_selection: boolean;
+  enable_smart_region_detection: boolean;
+  smart_region_wheel_expand: boolean;
+  show_magnifier: boolean;
+}
+
+export interface MonitorInfo {
+  id: number;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale_factor: number;
+  is_primary: boolean;
+}
+
+function tauriCore(): any {
+  const core = (window as any).__TAURI__?.core;
+  if (typeof core?.invoke !== 'function') {
+    throw new Error('截图功能只能在桌面应用中使用');
+  }
+  return core;
+}
+
+/** Tauri 原始字节响应在 JS 侧为 ArrayBuffer；兼容旧运行时返回数字数组的情况。 */
+function toArrayBuffer(value: unknown): ArrayBuffer {
+  if (value instanceof ArrayBuffer) return value;
+  if (ArrayBuffer.isView(value)) {
+    const view = value as ArrayBufferView;
+    return view.buffer.slice(view.byteOffset, view.byteOffset + view.byteLength) as ArrayBuffer;
+  }
+  if (Array.isArray(value)) return Uint8Array.from(value).buffer;
+  throw new Error('二进制响应格式无效');
+}
+
+export async function fetchFrozenFrame(sessionId: string): Promise<ArrayBuffer> {
+  return toArrayBuffer(await tauriCore().invoke('screenshot_frame', { sessionId }));
+}
+
+export async function fetchPinImage(pinId: string): Promise<ArrayBuffer> {
+  return toArrayBuffer(await tauriCore().invoke('screenshot_pin_image', { pinId }));
+}
+
+/** 获取长截图拼接产物原始 RGBA 字节流 */
+export async function fetchScrollImage(): Promise<ArrayBuffer> {
+  return toArrayBuffer(await tauriCore().invoke('screenshot_scroll_image'));
+}
+
+/** 长截图进行中的缩略图 PNG。 */
+export async function fetchScrollPreview(): Promise<ArrayBuffer> {
+  return toArrayBuffer(await tauriCore().invoke('screenshot_scroll_preview'));
+}
+
+/** 待确认的 GIF 字节。 */
+export async function fetchGifImage(): Promise<ArrayBuffer> {
+  return toArrayBuffer(await tauriCore().invoke('screenshot_gif_image'));
+}
+
+export interface ScrollStatus {
+  is_active: boolean;
+  width: number;
+  current_height: number;
+  frame_count: number;
+  auto_scroll_enabled: boolean;
+  auto_scroll_error: string | null;
+  stop_reason: { reason: string; [key: string]: unknown } | null;
+}
+
+export type GifRecordingPreset = 'original' | '1080p' | '720p' | '480p' | 'custom';
+
+export interface GifRecordingConfigOptions {
+  preset?: GifRecordingPreset;
+  fps?: 10 | 15 | 24 | 30;
+  max_duration_secs?: number;
+  custom_width?: number;
+  custom_height?: number;
+}
+
+export interface GifStatus {
+  is_recording: boolean;
+  width: number;
+  height: number;
+  duration_ms: number;
+  frame_count: number;
+  file_size_bytes: number;
+  pending_path: string | null;
+  saved_path: string | null;
+  auto_stopped: boolean;
+  error: string | null;
+}
+
+/** 导出选区：标注层 PNG 作为原始请求体（无标注时为空），参数放在请求头。 */
+export async function exportSelection(
+  sessionId: string,
+  selection: Rect,
+  action: ExportAction,
+  overlayPng: Uint8Array | null,
+  savePath?: string
+): Promise<ExportOutcome> {
+  const meta = encodeExportMetadata({ session_id: sessionId, selection, action, save_path: savePath });
+  const res: IpcResponse<ExportOutcome> = await tauriCore().invoke(
+    'screenshot_export',
+    overlayPng ?? new Uint8Array(0),
+    { headers: { 'x-aio-screenshot-export': meta } }
+  );
+  if (!res.ok || !res.data) throw new Error(res.error || '导出失败');
+  return res.data;
+}
+
+export const screenshotApi = {
+  /** 使用当前原生窗口作为属主；取消只返回 null，不执行任何导出。 */
+  pickSavePath: async (kind: 'png' | 'gif', title: string, filterLabel: string): Promise<string | null> => {
+    const ownerLabel = (window as any).__TAURI__?.window?.getCurrentWindow?.()?.label
+      || new URLSearchParams(window.location.search).get('window') || 'dashboard';
+    const result = await invokeIpc<{ path: string | null }>('screenshot_pick_save_path', {
+      kind, title, filter_label: filterLabel, default_name: `screenshot.${kind}`, owner_label: ownerLabel,
+    });
+    return result.path;
+  },
+  getSession: (sessionId?: string) =>
+    invokeIpc<ScreenshotSessionInfo>('screenshot_get_session', sessionId ? { session_id: sessionId } : {}),
+  overlayReady: (sessionId: string) => invokeIpc('screenshot_overlay_ready', { session_id: sessionId }),
+  resolveRegion: (sessionId: string, x: number, y: number, levelSteps: number) =>
+    invokeIpc<DetectedRegion | null>('screenshot_resolve_region', {
+      session_id: sessionId,
+      x,
+      y,
+      level_steps: levelSteps,
+    }),
+  cancel: (sessionId?: string) =>
+    invokeIpc<{ cancelled: boolean }>('screenshot_cancel', sessionId ? { session_id: sessionId } : {}),
+  copyColor: (text: string) => invokeIpc('screenshot_copy_color', { text }),
+  ocr: (sessionId: string, selection: Rect) =>
+    invokeIpc<OcrOutcome>('screenshot_ocr', { session_id: sessionId, selection }),
+  copyText: (text: string) => invokeIpc('screenshot_copy_text', { text }),
+  status: () => invokeIpc<ScreenshotStatus>('screenshot_get_status'),
+  start: (monitorId?: number | null, intent: 'capture' | 'ocr' = 'capture') =>
+    invokeIpc<ScreenshotSessionInfo>('screenshot_start_capture', {
+      hide_dashboard: true,
+      intent,
+      ...(monitorId != null ? { monitor_id: monitorId } : {}),
+    }),
+  listMonitors: () => invokeIpc<MonitorInfo[]>('screenshot_list_monitors'),
+  pinInfo: (pinId: string) => invokeIpc<PinSummary>('screenshot_pin_info', { pin_id: pinId }),
+  closePin: (pinId: string) => invokeIpc('screenshot_close_pin', { pin_id: pinId }),
+  closeAllPins: () => invokeIpc('screenshot_close_all_pins'),
+  copyPin: (pinId: string) => invokeIpc('screenshot_pin_copy', { pin_id: pinId }),
+  savePin: (pinId: string, path?: string) => invokeIpc<{ saved_path: string }>('screenshot_pin_save', { pin_id: pinId, path }),
+  getConfig: () => invokeIpc<{ settings: ScreenshotSettings; overlay: OverlayFlags }>('screenshot_get_config'),
+  updateSettings: (settings: Partial<ScreenshotSettings>, overlay: Partial<OverlayFlags>) =>
+    invokeIpc<{ settings: ScreenshotSettings; overlay: OverlayFlags }>('screenshot_update_settings', {
+      settings,
+      overlay,
+    }),
+  // ── M3: 滚动长截图 ──
+  scrollStart: (sessionId: string, selection: Rect) =>
+    invokeIpc<ScrollStatus>('screenshot_scroll_start', { session_id: sessionId, selection }),
+  scrollStop: () => invokeIpc<ScrollStatus>('screenshot_scroll_stop'),
+  scrollCancel: () => invokeIpc<{ cancelled: boolean }>('screenshot_scroll_cancel'),
+  scrollStatus: () => invokeIpc<ScrollStatus | null>('screenshot_scroll_status'),
+  scrollSetAuto: (enabled: boolean) => invokeIpc<{ ok: boolean }>('screenshot_scroll_set_auto', { enabled }),
+  scrollInfo: () => invokeIpc<ScrollStatus>('screenshot_scroll_info'),
+  scrollExport: (action: ExportAction, path?: string) => invokeIpc<ExportOutcome>('screenshot_scroll_export', { action, path }),
+
+  // ── M3: GIF 录制 ──
+  gifStart: (
+    sessionId: string,
+    selection: Rect,
+    options?: GifRecordingConfigOptions & { overlayPng?: Uint8Array | null }
+  ) =>
+    invokeIpc<GifStatus>('screenshot_gif_start', {
+      session_id: sessionId,
+      selection,
+      preset: options?.preset,
+      fps: options?.fps,
+      max_duration_secs: options?.max_duration_secs,
+      custom_width: options?.custom_width,
+      custom_height: options?.custom_height,
+      overlay_png_base64: options?.overlayPng?.length ? bytesToBase64(options.overlayPng) : undefined,
+    }),
+  gifStop: () => invokeIpc<GifStatus>('screenshot_gif_stop'),
+  gifConfirm: (path?: string) => invokeIpc<GifStatus>('screenshot_gif_confirm', { path }),
+  gifSaveAs: (path: string) => invokeIpc<{ saved_path: string }>('screenshot_gif_save_as', { path }),
+  gifCopy: () => invokeIpc<{ copied: boolean }>('screenshot_gif_copy'),
+  gifCancel: () => invokeIpc<{ cancelled: boolean }>('screenshot_gif_cancel'),
+  gifStatus: () => invokeIpc<GifStatus | null>('screenshot_gif_status'),
+};
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let text = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    text += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(text);
+}

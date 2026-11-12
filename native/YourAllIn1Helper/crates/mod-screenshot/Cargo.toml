@@ -1,0 +1,23 @@
+[package]
+name = "mod-screenshot"
+description = "Module 01 M1: frozen-frame screenshot, manual/window smart selection, annotation export, save/copy and pinned images."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+app-core = { path = "../app-core" }
+os-hal = { path = "../os-hal" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+parking_lot.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+gif = "0.14"
+color_quant = "1.1"
+# 另存为先写同目录临时文件，再原子替换，失败时保留原文件。
+tempfile = "3.10"

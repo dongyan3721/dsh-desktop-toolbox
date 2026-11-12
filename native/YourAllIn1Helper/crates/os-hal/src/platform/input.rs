@@ -1,0 +1,168 @@
+//! 键盘、鼠标输入能力的原生实现。
+use super::{native_error, NativeOsHal};
+use crate::{HalResult, InputSimulator};
+use enigo::{Axis, Coordinate, Enigo, Mouse, Settings};
+#[cfg(not(target_os = "windows"))]
+use enigo::{Direction, Key, Keyboard};
+use std::sync::atomic::Ordering;
+#[cfg(not(target_os = "windows"))]
+use std::time::Duration;
+
+impl NativeOsHal {
+    fn input_connection(&self) -> HalResult<Enigo> {
+        self.check_input_permission()?;
+        // Missing permissions are requested by the preflight; avoid requesting twice.
+        let settings = Settings {
+            open_prompt_to_get_permissions: false,
+            ..Settings::default()
+        };
+        Enigo::new(&settings).map_err(native_error)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn send_modified_key(&self, key_char: char) -> HalResult<()> {
+        #[cfg(target_os = "macos")]
+        let keycode = mac_shortcut_keycode(key_char)?;
+        let mut enigo = self.input_connection()?;
+        #[cfg(target_os = "macos")]
+        let modifier = Key::Meta;
+        #[cfg(not(target_os = "macos"))]
+        let modifier = Key::Control;
+        enigo
+            .key(modifier, Direction::Press)
+            .map_err(native_error)?;
+        // Cmd+C/V are physical shortcuts, not text entry. Avoid TIS keyboard-layout
+        // discovery (and input-method data access) for these fixed macOS key codes.
+        #[cfg(target_os = "macos")]
+        let key_result = enigo.raw(keycode, Direction::Click);
+        #[cfg(not(target_os = "macos"))]
+        let key_result = enigo.key(Key::Unicode(key_char), Direction::Click);
+        let release_result = enigo
+            .key(modifier, Direction::Release)
+            .map_err(native_error);
+        key_result.map_err(native_error)?;
+        release_result?;
+        Ok(())
+    }
+}
+
+impl InputSimulator for NativeOsHal {
+    fn remember_paste_target(&self) -> HalResult<()> {
+        #[cfg(target_os = "macos")]
+        {
+            let pid = objc2_app_kit::NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .map(|app| app.processIdentifier())
+                .filter(|pid| *pid > 0 && *pid as u32 != std::process::id());
+            *self.paste_target.lock().unwrap_or_else(|e| e.into_inner()) = pid;
+        }
+        #[cfg(target_os = "windows")]
+        super::windows::input::remember_paste_target(self)?;
+        Ok(())
+    }
+
+    fn forget_paste_target(&self) {
+        // macOS keeps its existing reactivation behaviour; only Windows drops the HWND.
+        #[cfg(target_os = "windows")]
+        super::windows::input::forget_paste_target(self);
+    }
+
+    fn check_input_permission(&self) -> HalResult<()> {
+        #[cfg(target_os = "macos")]
+        if !super::selection::macos::is_accessibility_trusted() {
+            // Preserve the original macOS authorization reminder when access is missing.
+            let _ = Enigo::new(&Settings::default());
+            return Err(crate::HalError::PermissionDenied {
+                capability: "accessibility",
+                guidance: "请在「系统设置 → 隐私与安全 → 设备控制和数据访问」（旧版称「辅助功能」）中添加当前运行的 App。旧测试副本的开关不代表当前签名副本已获授权；重新添加当前 App 后重启再试。".to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn paste_trigger_count(&self) -> u64 {
+        self.paste_triggers.load(Ordering::SeqCst) as u64
+    }
+    fn send_paste_shortcut(&self) -> HalResult<()> {
+        self.check_input_permission()?;
+        #[cfg(target_os = "windows")]
+        {
+            super::windows::input::restore_and_paste(self)?;
+            self.paste_triggers.fetch_add(1, Ordering::SeqCst);
+            return Ok(());
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            // Give the previous application time to regain focus after the transient popup closes.
+            std::thread::sleep(Duration::from_millis(140));
+            #[cfg(target_os = "macos")]
+            self.restore_paste_target()?;
+            self.send_modified_key('v')?;
+            self.paste_triggers.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn send_copy_shortcut(&self) -> HalResult<()> {
+        #[cfg(target_os = "windows")]
+        {
+            self.check_input_permission()?;
+            return super::windows::input::send_shortcut('c', None);
+        }
+        #[cfg(not(target_os = "windows"))]
+        self.send_modified_key('c')
+    }
+
+    fn scroll_wheel_at(&self, x: i32, y: i32, delta_y: i32) -> HalResult<()> {
+        let mut enigo = self.input_connection()?;
+        enigo
+            .move_mouse(x, y, Coordinate::Abs)
+            .map_err(native_error)?;
+        enigo.scroll(delta_y, Axis::Vertical).map_err(native_error)
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl NativeOsHal {
+    fn restore_paste_target(&self) -> HalResult<()> {
+        use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication, NSWorkspace};
+        let target = self
+            .paste_target
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        let Some(pid) = target else {
+            return Ok(());
+        };
+        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid)
+            .filter(|app| !app.isTerminated())
+            .ok_or_else(|| {
+                crate::HalError::NotFound("原粘贴目标已退出，请重新打开历史面板选择目标".into())
+            })?;
+        #[allow(deprecated)]
+        if !app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps) {
+            return Err(native_error("无法恢复原应用焦点，已取消自动粘贴"));
+        }
+        // Activation is asynchronous. Never send Cmd+V while Dashboard is still frontmost.
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while std::time::Instant::now() < deadline {
+            if NSWorkspace::sharedWorkspace()
+                .frontmostApplication()
+                .is_some_and(|front| front.processIdentifier() == pid)
+            {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Err(native_error("原应用未取得焦点，已取消自动粘贴"))
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn mac_shortcut_keycode(key: char) -> HalResult<u16> {
+    match key {
+        'c' => Ok(0x08),
+        'v' => Ok(0x09),
+        _ => Err(crate::HalError::Unsupported("mac_shortcut_key")),
+    }
+}

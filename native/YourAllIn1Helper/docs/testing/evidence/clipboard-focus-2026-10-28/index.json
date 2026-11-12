@@ -1,0 +1,24 @@
+{
+  "evidence": [
+    {
+      "file": "build.json",
+      "sha256": "1d6e9a078f0834f16654db0b03277760b5811ecabba41ff32f2ec04ce35f3588"
+    },
+    {
+      "file": "host-tests.log",
+      "sha256": "d46e18a76f59871e83e86328139c432518cd8ea7572f746407fadd43cd2d386d"
+    },
+    {
+      "file": "no-flash-build.json",
+      "sha256": "47f5ba7192e9337b14e7348be28f5d427d3edc281688acc1710a32c8b0405f04"
+    },
+    {
+      "file": "runtime-restart.json",
+      "sha256": "3a627e76b42a7285851aa0ae296a20ed278d1a0214c5ef290e22916b9f17ede7"
+    },
+    {
+      "file": "tests.log",
+      "sha256": "921e4d8fe24432f631e7675258fc3798d7834677313b128d23a3dd0ddf064b46"
+    }
+  ]
+}

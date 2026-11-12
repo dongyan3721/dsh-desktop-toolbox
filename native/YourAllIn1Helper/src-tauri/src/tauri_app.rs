@@ -1,0 +1,1796 @@
+//! Real Tauri 2.x desktop shell.
+//!
+//! Owns native WebView windows, tray, global shortcuts and application lifecycle. The
+//! microkernel stays UI-framework agnostic through `app_core::WindowBackend`.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use app_core::{
+    CloseFlushOutcome, CloseFlushReport, CoreError, CoreResult, WindowBackend, WindowSpec,
+};
+use os_hal::ExternalWindowInfo;
+use serde_json::{json, Value};
+use tauri::{
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+    AppHandle, Emitter, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+
+use crate::exit_coordinator::{ExitCoordinator, ExitDecision};
+use crate::script_env::AioScriptEnvironment;
+use crate::script_events::TauriScriptEventSink;
+use crate::script_hotkeys::TauriScriptHotkeySync;
+use crate::sticky_flush::StickyFlushCoordinator;
+use crate::{DesktopHost, IpcRequest, IpcResponse};
+
+const ACTION_CLIPBOARD: &str = "clipboard:toggle_popup";
+const ACTION_SCREEN_INK: &str = "screen_ink:toggle_session";
+const ACTION_STICKY: &str = "sticky_note:create";
+const ACTION_PIN_FOREGROUND: &str = "window_pin:toggle_foreground";
+const ACTION_TRANSLATOR: &str = "translator:translate_selection";
+
+struct TauriVaultEventSink(AppHandle);
+
+impl mod_password_vault::VaultEventSink for TauriVaultEventSink {
+    fn locked(&self, event: mod_password_vault::VaultEvent) {
+        // 事件只含 epoch 与锁定原因，不携带主密码、DEK 或条文明文。
+        let _ = self.0.emit("vault://locked", event);
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+thread_local! {
+    static VAULT_NATIVE_OBSERVER: std::cell::RefCell<
+        Option<mod_password_vault::native::NativeVaultObserver>
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn stop_vault_native_observer() {
+    VAULT_NATIVE_OBSERVER.with(|slot| {
+        if let Some(observer) = slot.borrow_mut().take() {
+            observer.stop();
+        }
+    });
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn stop_vault_native_observer() {}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn sync_vault_native_observer(app: &AppHandle) {
+    let Some(host) = app.try_state::<Arc<DesktopHost>>() else {
+        return;
+    };
+    let enabled = host
+        .kernel()
+        .registry()
+        .is_enabled(mod_password_vault::MODULE_ID);
+    VAULT_NATIVE_OBSERVER.with(|slot| {
+        if enabled {
+            if slot.borrow().is_none() {
+                match mod_password_vault::native::NativeVaultObserver::start(
+                    host.password_vault.service(),
+                ) {
+                    Ok(observer) => *slot.borrow_mut() = Some(observer),
+                    Err(error) => {
+                        host.password_vault.notify_page_close();
+                        tracing::error!(%error, "Password vault native observer unavailable");
+                    }
+                }
+            }
+        } else if let Some(observer) = slot.borrow_mut().take() {
+            observer.stop();
+        }
+    });
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+fn sync_vault_native_observer(_app: &AppHandle) {}
+
+fn to_core_error(error: impl std::fmt::Display) -> CoreError {
+    CoreError::Internal(anyhow::anyhow!(error.to_string()))
+}
+
+/// Maps the microkernel's declarative window specs to real Tauri `WebviewWindow`s.
+pub struct TauriWindowBackend {
+    app: AppHandle,
+    sticky_flush: Arc<StickyFlushCoordinator>,
+}
+
+impl TauriWindowBackend {
+    #[allow(dead_code)]
+    pub fn new(app: AppHandle) -> Self {
+        Self::with_flush_coordinator(app, Arc::new(StickyFlushCoordinator::new()))
+    }
+
+    pub(crate) fn with_flush_coordinator(
+        app: AppHandle,
+        sticky_flush: Arc<StickyFlushCoordinator>,
+    ) -> Self {
+        Self { app, sticky_flush }
+    }
+
+    fn frontend_url(spec: &WindowSpec) -> String {
+        let mut url = format!("index.html?mode=native&window={}", spec.label);
+        if let Some(note_id) = spec.label.strip_prefix("sticky-note-") {
+            url.push_str("&id=");
+            url.push_str(note_id);
+        }
+        if spec.label == "dashboard" || spec.label.starts_with("feature-") {
+            url.push_str("&route=");
+            url.push_str(spec.route.trim_start_matches('/'));
+        }
+        url
+    }
+}
+
+impl WindowBackend for TauriWindowBackend {
+    fn create_or_focus_window(&self, spec: &WindowSpec) -> CoreResult<()> {
+        if spec.label == "clipboard-popup" {
+            crate::clipboard_window::prepare_popup(&self.app)
+                .map_err(|error| CoreError::Internal(anyhow::anyhow!(error)))?;
+        }
+        if let Some(window) = self.app.get_webview_window(&spec.label) {
+            if spec.label == mod_screenshot::OVERLAY_LABEL {
+                // 截图遮罩只能在前端绘制冻结帧后由 overlay_ready 显示，避免露出未绘制的窗口。
+                return Ok(());
+            }
+            if spec.label == "dashboard" {
+                self.app
+                    .emit("dashboard://navigate", spec.route.clone())
+                    .map_err(to_core_error)?;
+            }
+            if spec.label == "dashboard" || spec.label.starts_with("feature-") {
+                window.unminimize().map_err(to_core_error)?;
+            }
+            window.show().map_err(to_core_error)?;
+            if spec.label == "translate-popover" {
+                crate::translator_mouse::constrain_native_popover(&window).map_err(|reason| {
+                    CoreError::WindowLifecycle {
+                        label: spec.label.clone(),
+                        reason,
+                    }
+                })?;
+            }
+            if spec.label == "clipboard-popup" {
+                if let Err(reason) = crate::clipboard_window::focus_popup(&window) {
+                    let _ = window.destroy();
+                    return Err(CoreError::WindowLifecycle {
+                        label: spec.label.clone(),
+                        reason,
+                    });
+                }
+            } else if spec.focus {
+                window.set_focus().map_err(to_core_error)?;
+            }
+            if spec.label == "screen-ink-toolbar" {
+                crate::ink_window::elevate_toolbar(&self.app, &window)?;
+            }
+            if spec.label == mod_screenshot::CONTROL_LABEL {
+                crate::screenshot_window::present_capture_overlay(&self.app, &window)?;
+            }
+            return Ok(());
+        }
+
+        let mut builder = WebviewWindowBuilder::new(
+            &self.app,
+            &spec.label,
+            WebviewUrl::App(Self::frontend_url(spec).into()),
+        )
+        .title(&spec.title)
+        .inner_size(spec.width, spec.height)
+        .resizable(spec.resizable)
+        .decorations(spec.decorations)
+        .transparent(spec.transparent)
+        .always_on_top(spec.always_on_top)
+        .skip_taskbar(spec.skip_taskbar)
+        // Windows 候选窗由显式前台策略激活，避免窗口创建阶段重复请求焦点。
+        .focused(spec.focus && !(cfg!(target_os = "windows") && spec.label == "clipboard-popup"));
+
+        if let (Some(min_w), Some(min_h)) = (spec.min_width, spec.min_height) {
+            builder = builder.min_inner_size(min_w, min_h);
+        }
+        if let (Some(x), Some(y)) = (spec.x, spec.y) {
+            let (x, y) = if spec.label == "translate-popover" {
+                crate::translator_mouse::popover_position(&self.app, x, y, spec.width, spec.height)
+            } else {
+                (x, y)
+            };
+            builder = builder.position(x, y);
+        }
+        if spec.label == mod_screenshot::OVERLAY_LABEL {
+            // 冻结帧先于遮罩：遮罩隐藏创建，位置与尺寸已由模块按被截显示器的逻辑坐标给出。
+            builder = builder.visible(false).shadow(false);
+        }
+        if spec.label == "window-pin-picker" || spec.label == "screen-ink-canvas" {
+            if let Ok(Some(monitor)) = self.app.primary_monitor() {
+                let size = monitor.size();
+                let position = monitor.position();
+                let scale = monitor.scale_factor();
+                builder = builder
+                    .inner_size(size.width as f64 / scale, size.height as f64 / scale)
+                    .position(position.x as f64 / scale, position.y as f64 / scale);
+            }
+        }
+        if spec.label == "screen-ink-toolbar" {
+            // 仅对两个窗口都设置 always_on_top 不能维持相互顺序：点击画布时
+            // 它会盖住同层工具栏。建立原生从属关系，并由 ink_window 策略补充
+            // macOS 独立层级；保留独立 WebView 与鼠标交互。
+            let canvas = self
+                .app
+                .get_webview_window("screen-ink-canvas")
+                .ok_or_else(|| CoreError::WindowLifecycle {
+                    label: spec.label.clone(),
+                    reason: "Screen ink canvas must exist before toolbar".to_string(),
+                })?;
+            builder = builder.parent(&canvas).map_err(to_core_error)?;
+            if let Ok(Some(monitor)) = self.app.primary_monitor() {
+                let size = monitor.size();
+                let position = monitor.position();
+                let scale = monitor.scale_factor();
+                let mon_w = size.width as f64 / scale;
+                let mon_x = position.x as f64 / scale;
+                let mon_y = position.y as f64 / scale;
+                let x = mon_x + (mon_w - spec.width) / 2.0;
+                let y = mon_y + 32.0;
+                builder = builder.position(x, y);
+            }
+        }
+
+        let window = builder.build().map_err(to_core_error)?;
+        if spec.label == "translate-popover" {
+            if let Err(reason) = crate::translator_mouse::constrain_native_popover(&window) {
+                let _ = window.destroy();
+                return Err(CoreError::WindowLifecycle {
+                    label: spec.label.clone(),
+                    reason,
+                });
+            }
+        }
+        if spec.label == "screen-ink-toolbar" {
+            if let Err(error) = crate::ink_window::elevate_toolbar(&self.app, &window) {
+                let _ = window.destroy();
+                return Err(error);
+            }
+        }
+        if spec.label == mod_screenshot::CONTROL_LABEL {
+            if let Err(error) =
+                crate::screenshot_window::present_capture_overlay(&self.app, &window)
+            {
+                let _ = window.destroy();
+                return Err(error);
+            }
+        }
+        if spec.label == "clipboard-popup" {
+            if let Err(reason) = crate::clipboard_window::present_new_popup(&window) {
+                let _ = window.destroy();
+                return Err(CoreError::WindowLifecycle {
+                    label: spec.label.clone(),
+                    reason,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn destroy_window(&self, label: &str) -> CoreResult<()> {
+        if let Some(window) = self.app.get_webview_window(label) {
+            window.destroy().map_err(to_core_error)?;
+        }
+        Ok(())
+    }
+
+    fn request_close_flush(&self, label: &str, timeout: Duration) -> CoreResult<CloseFlushReport> {
+        let Some(note_id) = label.strip_prefix("sticky-note-") else {
+            return Ok(CloseFlushReport {
+                request_id: 0,
+                outcome: CloseFlushOutcome::NotNeeded,
+            });
+        };
+        let Some(window) = self.app.get_webview_window(label) else {
+            return Ok(CloseFlushReport {
+                request_id: 0,
+                outcome: CloseFlushOutcome::NotNeeded,
+            });
+        };
+        if self.sticky_flush.is_main_thread() {
+            // Waiting for WebView JS/IPC on the AppKit main thread would deadlock the page.
+            return Ok(CloseFlushReport {
+                request_id: 0,
+                outcome: CloseFlushOutcome::Failed("不能在原生主线程等待便笺保存".to_string()),
+            });
+        }
+        let (request_id, signal) = self.sticky_flush.begin(note_id);
+        if let Err(error) = window.emit(
+            "sticky://flush-save",
+            json!({ "id": note_id, "request_id": request_id }),
+        ) {
+            self.sticky_flush.cancel(note_id, request_id, &signal);
+            return Ok(CloseFlushReport {
+                request_id,
+                outcome: CloseFlushOutcome::Failed(format!("无法请求便笺保存：{}", error)),
+            });
+        }
+        Ok(CloseFlushReport {
+            request_id,
+            outcome: self.sticky_flush.wait(note_id, request_id, signal, timeout),
+        })
+    }
+
+    fn cancel_close_flush(&self, label: &str, request_id: u64) -> CoreResult<()> {
+        let Some(note_id) = label.strip_prefix("sticky-note-") else {
+            return Ok(());
+        };
+        if let Some(window) = self.app.get_webview_window(label) {
+            window
+                .emit(
+                    "sticky://flush-cancel",
+                    json!({ "id": note_id, "request_id": request_id }),
+                )
+                .map_err(to_core_error)?;
+        }
+        Ok(())
+    }
+
+    fn set_ignore_cursor_events(&self, label: &str, ignore: bool) -> CoreResult<()> {
+        let window =
+            self.app
+                .get_webview_window(label)
+                .ok_or_else(|| CoreError::WindowLifecycle {
+                    label: label.to_string(),
+                    reason: "Tauri window not found".to_string(),
+                })?;
+        window
+            .set_ignore_cursor_events(ignore)
+            .map_err(to_core_error)?;
+        if label == "screen-ink-canvas" {
+            // 穿透后画布不再收到鼠标移动，必须在原生层立刻恢复箭头。
+            // 回到绘制时先给十字；画布随后按工具发出的命令更晚入队，橡皮和激光笔不会被盖掉。
+            crate::ink_window::apply_cursor_shape(
+                &self.app,
+                if ignore { "arrow" } else { "crosshair" },
+            );
+        }
+        Ok(())
+    }
+
+    fn set_always_on_top(&self, label: &str, always_on_top: bool) -> CoreResult<()> {
+        let window =
+            self.app
+                .get_webview_window(label)
+                .ok_or_else(|| CoreError::WindowLifecycle {
+                    label: label.to_string(),
+                    reason: "Tauri window not found".to_string(),
+                })?;
+        window
+            .set_always_on_top(always_on_top)
+            .map_err(to_core_error)
+    }
+
+    fn set_window_visible(&self, label: &str, visible: bool) -> CoreResult<()> {
+        if let Some(window) = self.app.get_webview_window(label) {
+            if visible
+                && (label == mod_screenshot::OVERLAY_LABEL
+                    || label == mod_screenshot::CONTROL_LABEL)
+            {
+                return crate::screenshot_window::present_capture_overlay(&self.app, &window);
+            }
+            if visible {
+                window.show().map_err(to_core_error)?;
+                if label == "screen-ink-toolbar" {
+                    crate::ink_window::elevate_toolbar(&self.app, &window)?;
+                }
+            } else {
+                window.hide().map_err(to_core_error)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Single typed IPC entry point used by every WebView.
+#[tauri::command]
+async fn ipc(app: AppHandle, window: tauri::WebviewWindow, mut request: IpcRequest) -> IpcResponse {
+    if request.cmd == "sticky_request_close" {
+        let id = request
+            .args
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let label = mod_sticky_note::StickyNoteModule::window_label_for(&id);
+        if let Some(webview) = app.get_webview_window(&label) {
+            match webview.emit("sticky://flush-close", json!({ "id": id })) {
+                Ok(()) => {
+                    return IpcResponse::success(json!({
+                        "id": id,
+                        "delegated": true,
+                        "closed": false
+                    }));
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "Sticky note flush-close delegation failed; closing directly");
+                }
+            }
+        }
+        request.cmd = "sticky_close_note".to_string();
+    }
+    if request.cmd == "sticky_flush_result" {
+        let id = request.args.get("id").and_then(Value::as_str).unwrap_or("");
+        let request_id = request
+            .args
+            .get("request_id")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let ok = request
+            .args
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let result = if ok {
+            Ok(())
+        } else {
+            Err(request
+                .args
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("便笺页面报告保存失败")
+                .to_string())
+        };
+        let acknowledged = app
+            .try_state::<Arc<StickyFlushCoordinator>>()
+            .is_some_and(|coordinator| coordinator.complete(id, request_id, result));
+        return IpcResponse::success(json!({
+            "id": id,
+            "request_id": request_id,
+            "acknowledged": acknowledged
+        }));
+    }
+    if request.cmd == "kernel_shutdown" {
+        // 桌面退出统一交给 ExitRequested；这里不能在活动 IPC 中等待内核清理。
+        app.exit(0);
+        return IpcResponse::success(json!({ "exit_requested": true }));
+    }
+    let host = app.state::<Arc<DesktopHost>>().inner().clone();
+    if request.cmd == "kernel_set_shortcut_recording" {
+        let Some(recording) = request.args.get("recording").and_then(Value::as_bool) else {
+            return IpcResponse::err("Missing recording boolean");
+        };
+        if recording && !window.is_focused().unwrap_or(false) {
+            return IpcResponse::err("The shortcut recorder window is not focused");
+        }
+        host.set_shortcut_recorder(window.label(), recording);
+        return IpcResponse::success(json!({"recording":recording,"native":true}));
+    }
+    if request.cmd == "kernel_open_manual" {
+        return match crate::user_manual::open(&app) {
+            Ok(path) => IpcResponse::success(json!({"path":path})),
+            Err(error) => IpcResponse::err(error.to_string()),
+        };
+    }
+    if request.cmd == "kernel_check_shortcuts" || request.cmd == "kernel_check_shortcut" {
+        let result = if request.cmd == "kernel_check_shortcuts" {
+            host.check_all_shortcuts(|key| crate::shortcut_conflicts::probe_native(&app, key))
+        } else {
+            let Some(action) = request.args.get("action_id").and_then(Value::as_str) else {
+                return IpcResponse::err("Missing action_id");
+            };
+            let hotkey = match request.args.get("hotkey") {
+                Some(Value::Null) => None,
+                Some(Value::String(value)) => Some(value.as_str()),
+                _ => return IpcResponse::err("hotkey must be a string or null"),
+            };
+            host.check_shortcut(action, hotkey, |key| {
+                crate::shortcut_conflicts::probe_native(&app, key)
+            })
+        };
+        return match result {
+            Ok(value) => IpcResponse::success(value),
+            Err(error) => IpcResponse::err(error.to_string()),
+        };
+    }
+    if request.cmd == "kernel_update_shortcut" {
+        let action = match request.args.get("action_id").and_then(Value::as_str) {
+            Some(action) => action,
+            None => return IpcResponse::err("Missing action_id"),
+        };
+        let hotkey = match request.args.get("hotkey") {
+            Some(Value::Null) => None,
+            Some(Value::String(value)) => Some(value.as_str()),
+            _ => return IpcResponse::err("hotkey must be a string or null"),
+        };
+        let result = host.update_shortcut_preference(action, hotkey, || {
+            let failures = register_global_shortcuts(&app).map_err(to_core_error)?;
+            if let Some(failure) = failures.iter().find(|failure| failure.action_id == action) {
+                return Err(CoreError::Config(format!(
+                    "{}: {}",
+                    failure.accelerator, failure.error
+                )));
+            }
+            Ok(())
+        });
+        let _ = update_tray_menu(&app);
+        emit_update(&app);
+        return match result {
+            Ok(value) => IpcResponse::success(value),
+            Err(error) => IpcResponse::err(error.to_string()),
+        };
+    }
+    if request.cmd.starts_with("vault_") {
+        #[cfg(target_os = "windows")]
+        if matches!(
+            request.cmd.as_str(),
+            "vault_unlock_biometric" | "vault_set_biometric_enabled"
+        ) {
+            // 将真实主窗口交给 Passport KSP；不再靠额外的临时窗口抢前台。
+            let owner = app
+                .get_webview_window(window.label())
+                .and_then(|window| window.hwnd().ok())
+                .ok_or(mod_password_vault::VaultError::BiometricUnavailable)
+                .and_then(|hwnd| {
+                    mod_password_vault::set_windows_hello_owner_window(hwnd.0 as isize)
+                });
+            if let Err(error) = owner {
+                return IpcResponse::err(error.to_string());
+            }
+        }
+        return host.invoke_vault_ipc(&request.cmd, request.args).await;
+    }
+    if matches!(
+        request.cmd.as_str(),
+        "media_pick_files" | "media_pick_directory"
+    ) {
+        return crate::native_dialog::pick_media(
+            &app,
+            &host,
+            request.cmd == "media_pick_directory",
+            window.label(),
+        )
+        .await;
+    }
+    if request.cmd == "screenshot_pick_save_path" || request.cmd == "sticky_pick_save_path" {
+        request.args["owner_label"] = json!(window.label());
+        if request.cmd == "sticky_pick_save_path" {
+            request.args["kind"] = json!("md");
+        }
+        // 截图「另存为」系统保存对话框（异步，不阻塞 UI）；截图导出分派由本任务维护。
+        return crate::native_save_dialog::pick_screenshot_save_path(&app, &host, request.args)
+            .await;
+    }
+    let module_id = request
+        .args
+        .get("module_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let module_enabled = request.args.get("enabled").and_then(Value::as_bool);
+    if request.cmd == "kernel_set_module_enabled"
+        && module_id.as_deref() == Some("sticky_note")
+        && module_enabled == Some(false)
+    {
+        // 页面仍处于启用状态时先完成落盘。失败则取消本次停用并保留窗口，
+        // 由 IPC 错误向界面反馈，而不是先禁用再盲销毁。
+        let flush_host = host.clone();
+        let flush = tauri::async_runtime::spawn_blocking(move || {
+            flush_host
+                .sticky_note
+                .flush_open_windows(flush_host.kernel().context())
+        })
+        .await;
+        match flush {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                return IpcResponse::err(format!("便笺保存未完成，已取消停用：{}", error))
+            }
+            Err(error) => {
+                return IpcResponse::err(format!("便笺保存线程失败，已取消停用：{}", error))
+            }
+        }
+    }
+    let previous = module_id
+        .as_deref()
+        .map(|id| host.kernel().registry().is_enabled(id));
+    let ink_cursor_shape = (request.cmd == "ink_apply_cursor").then(|| {
+        request
+            .args
+            .get("shape")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string()
+    });
+    let response = host.invoke_ipc(&request.cmd, request.args);
+    if response.ok {
+        if matches!(
+            request.cmd.as_str(),
+            "sticky_save_markdown"
+                | "screenshot_pin_save"
+                | "screenshot_scroll_export"
+                | "screenshot_gif_confirm"
+                | "screenshot_gif_save_as"
+                | "ink_save_snapshot"
+        ) {
+            if let Some(path) = response
+                .data
+                .as_ref()
+                .and_then(|data| data.get("saved_path"))
+                .and_then(Value::as_str)
+            {
+                crate::save_feedback::notify_saved(&app, path);
+            }
+        }
+        if let Some(shape) = ink_cursor_shape.as_deref() {
+            crate::ink_window::apply_cursor_shape(&app, shape);
+        }
+    }
+    if response.ok && request.cmd == "kernel_set_module_enabled" {
+        let now_enabled = module_id
+            .as_deref()
+            .map(|id| host.kernel().registry().is_enabled(id));
+        let rollback_reason = match register_global_shortcuts(&app) {
+            Err(error) => Some(error.to_string()),
+            // 只有刚开启的模块自身快捷键注册失败才撤销开启；其他模块的失败已记录供界面显示。
+            Ok(failures) if now_enabled == Some(true) && previous == Some(false) => failures
+                .iter()
+                .find(|f| Some(f.module_id.as_str()) == module_id.as_deref())
+                .map(|f| format!("{}（{}）：{}", f.accelerator, f.action_id, f.error)),
+            Ok(_) => None,
+        };
+        if let Some(reason) = rollback_reason {
+            if let (Some(id), Some(enabled)) = (module_id.as_deref(), previous) {
+                let _ = host.kernel().set_module_enabled(id, enabled);
+                let _ = host.sync_panel_shortcuts();
+            }
+            let _ = register_global_shortcuts(&app);
+            let _ = update_tray_menu(&app);
+            emit_update(&app);
+            return IpcResponse::err(format!(
+                "更新系统快捷键失败，已尝试还原模块状态：{}",
+                reason
+            ));
+        }
+        let _ = update_tray_menu(&app);
+        sync_vault_native_observer(&app);
+        if module_id.as_deref() == Some(mod_screenshot::MODULE_ID)
+            && !host
+                .kernel()
+                .registry()
+                .is_enabled(mod_screenshot::MODULE_ID)
+        {
+            // 模块 on_shutdown 已经销毁；这里兜底清理窗口池之外残留的同名原生窗口。
+            for (label, window) in app.webview_windows() {
+                if label == mod_screenshot::OVERLAY_LABEL
+                    || label == mod_screenshot::CONTROL_LABEL
+                    || label == mod_screenshot::PREVIEW_LABEL
+                    || label.starts_with(mod_screenshot::pins::PIN_LABEL_PREFIX)
+                {
+                    let _ = window.destroy();
+                }
+            }
+        }
+        if module_id.as_deref() == Some("window_pin")
+            && !host.kernel().registry().is_enabled("window_pin")
+        {
+            for (label, window) in app.webview_windows() {
+                if label.starts_with("pin-badge-") || label.starts_with("pin-mirror-") {
+                    let _ = window.destroy();
+                }
+            }
+        }
+        if module_id.as_deref() == Some("screen_ink")
+            && !host.kernel().registry().is_enabled("screen_ink")
+        {
+            for label in ["screen-ink-canvas", "screen-ink-toolbar"] {
+                if let Some(window) = app.get_webview_window(label) {
+                    let _ = window.destroy();
+                }
+            }
+            crate::ink_window::apply_cursor_shape(&app, "arrow");
+        }
+        emit_update(&app);
+    } else if response.ok && request.cmd == "kernel_update_general_config" {
+        // 当用户切换多语言时，同步刷新系统托盘菜单多语言文案并通知各窗口
+        let _ = update_tray_menu(&app);
+        emit_update(&app);
+    } else if response.ok && (request.cmd == "script_save" || request.cmd == "script_delete") {
+        // 单脚本系统快捷键已由模块内的 Tauri 同步器完成并可回滚；
+        // 这里只同步托盘快捷脚本与界面状态，避免再次全量注册覆盖已有快捷键。
+        let _ = update_tray_menu(&app);
+        emit_update(&app);
+    } else if response.ok
+        && (request.cmd == "ink_set_passthrough"
+            || request.cmd == "ink_start_session"
+            || request.cmd == "ink_exit_session")
+    {
+        let snap = host.screen_ink.get_status();
+        if !snap.is_active {
+            crate::ink_window::apply_cursor_shape(&app, "arrow");
+        }
+        let _ = app.emit(
+            "screen-ink://mode-changed",
+            serde_json::to_value(&snap).unwrap_or_default(),
+        );
+        emit_update(&app);
+    } else if response.ok && request.cmd == "ink_clear_canvas" {
+        let _ = app.emit("screen-ink://clear-canvas", json!({}));
+        emit_update(&app);
+    } else if response.ok && request.cmd == "sticky_close_note" {
+        emit_update(&app);
+    } else if response.ok
+        && matches!(
+            request.cmd.as_str(),
+            "screenshot_start_capture"
+                | "screenshot_cancel"
+                | "screenshot_close_pin"
+                | "screenshot_close_all_pins"
+                | "screenshot_update_settings"
+        )
+    {
+        emit_update(&app);
+    }
+    response
+}
+
+pub(crate) fn manual_data_dir(app: &AppHandle) -> CoreResult<std::path::PathBuf> {
+    if let Some(directory) = gui_test::data_dir() {
+        return Ok(directory);
+    }
+    app.path().app_data_dir().map_err(to_core_error)
+}
+
+fn emit_update(app: &AppHandle) {
+    let _ = app.emit("kernel://updated", Value::Null);
+}
+
+/// Exit was cancelled because a sticky note could not confirm persistence.
+/// Keep the note window visible so its own save-error state is user-visible.
+fn report_sticky_shutdown_blocked(app: &AppHandle, reason: &str) {
+    tracing::warn!(%reason, "Application exit cancelled: sticky note save is incomplete");
+    let _ = app.emit("sticky://shutdown-blocked", json!({ "reason": reason }));
+    if let Some(dashboard) = app.get_webview_window("dashboard") {
+        let _ = dashboard.show();
+    }
+    if let Some(host) = app.try_state::<Arc<DesktopHost>>() {
+        // Bring the affected note forward last so its save-error footer stays visible.
+        for window in host.kernel().context().window_pool.list_active_windows() {
+            if window.spec.label.starts_with("sticky-note-") {
+                if let Some(native) = app.get_webview_window(&window.spec.label) {
+                    let _ = native.show();
+                    let _ = native.set_focus();
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn is_exiting(app: &AppHandle) -> bool {
+    app.try_state::<Arc<ExitCoordinator>>()
+        .is_some_and(|exit| exit.is_shutting_down())
+}
+
+fn trigger_action(app: &AppHandle, action_id: &str) {
+    // 后台 shutdown 可能正在等活动租约，原生回调不得再在主线程等待该锁。
+    if is_exiting(app) {
+        return;
+    }
+    // 翻译要等目标应用的无障碍树。截图要抓屏并创建全屏遮罩。
+    // macOS 全局热键回调在 AppKit 主线程上：若在这里同步做完，遮罩页随后
+    // `run_on_main_thread` 等主线程显示窗口。主窗口最小化时窗口服务会拖住这条回调，
+    // 等待超时后界面留下 Internal kernel error，恢复窗口也不会清掉。
+    // Windows 候选窗会有界等待原生激活结果；必须让主线程继续派发窗口消息。
+    if action_id == ACTION_TRANSLATOR
+        || action_id.ends_with(":open_panel")
+        || action_id.starts_with("screenshot:")
+        || (cfg!(target_os = "windows") && action_id == ACTION_CLIPBOARD)
+    {
+        let app = app.clone();
+        let action_id = action_id.to_string();
+        tauri::async_runtime::spawn_blocking(move || {
+            if is_exiting(&app) {
+                return;
+            }
+            if let Some(host) = app.try_state::<Arc<DesktopHost>>() {
+                if let Err(error) = host.trigger_desktop_action(&action_id) {
+                    tracing::error!(action_id, %error, "Global shortcut action failed");
+                }
+            }
+            emit_update(&app);
+        });
+        return;
+    }
+    if let Some(host) = app.try_state::<Arc<DesktopHost>>() {
+        if let Err(error) = host.trigger_desktop_action(action_id) {
+            tracing::error!(action_id, %error, "Global shortcut action failed");
+        }
+        if action_id.starts_with("screen_ink:") {
+            let snap = host.screen_ink.get_status();
+            if !snap.is_active {
+                crate::ink_window::apply_cursor_shape(app, "arrow");
+            }
+            let _ = app.emit(
+                "screen-ink://mode-changed",
+                serde_json::to_value(&snap).unwrap_or_default(),
+            );
+        }
+        emit_update(app);
+    }
+}
+
+/// 单个系统快捷键注册失败的记录。
+struct NativeShortcutFailure {
+    module_id: String,
+    action_id: String,
+    accelerator: String,
+    error: String,
+}
+
+/// The OS consumes registered accelerators before WebView keydown. Forward them
+/// only to the focused recorder's own window instead of executing their actions.
+pub(crate) fn record_shortcut_if_focused(app: &AppHandle, accelerator: &str) -> bool {
+    let Some(host) = app.try_state::<Arc<DesktopHost>>() else {
+        return false;
+    };
+    let owner = host.shortcut_recording_owner.read().clone();
+    let Some(window) = owner.and_then(|label| app.get_webview_window(&label)) else {
+        return false;
+    };
+    if !window.is_focused().unwrap_or(false) {
+        return false;
+    }
+    if let Err(error) = window.emit("shortcut://recorded", json!({"hotkey": accelerator})) {
+        tracing::warn!(%error, "Failed to deliver a registered key to its shortcut recorder");
+    }
+    // Even a failed delivery must not execute an action while recording.
+    true
+}
+
+/// Re-register physical bindings, recording per-action OS errors for preferences.
+fn register_global_shortcuts(app: &AppHandle) -> anyhow::Result<Vec<NativeShortcutFailure>> {
+    let _native_guard = crate::shortcut_conflicts::NATIVE_SHORTCUT_GATE.lock();
+    app.global_shortcut().unregister_all()?;
+    let host = app.state::<Arc<DesktopHost>>();
+    let mut failures = Vec::new();
+    for shortcut in host.kernel().context().shortcut_registry.list_all() {
+        let action_id = shortcut.spec.action_id.clone();
+        let recorded_accelerator = shortcut.physical_accelerator.clone();
+        let registered = app.global_shortcut().on_shortcut(
+            shortcut.physical_accelerator.as_str(),
+            move |app, _, event| {
+                if event.state == ShortcutState::Pressed
+                    && !record_shortcut_if_focused(app, &recorded_accelerator)
+                {
+                    trigger_action(app, &action_id);
+                }
+            },
+        );
+        if let Err(error) = registered {
+            tracing::error!(
+                action_id = %shortcut.spec.action_id,
+                accelerator = %shortcut.physical_accelerator,
+                %error,
+                "Global shortcut registration failed"
+            );
+            failures.push(NativeShortcutFailure {
+                module_id: shortcut.spec.module_id.clone(),
+                action_id: shortcut.spec.action_id.clone(),
+                accelerator: shortcut.physical_accelerator.clone(),
+                error: error.to_string(),
+            });
+        }
+    }
+    host.set_native_shortcut_failures(
+        failures
+            .iter()
+            .map(|f| {
+                (
+                    f.action_id.clone(),
+                    format!("{}：{}", f.accelerator, f.error),
+                )
+            })
+            .collect(),
+    );
+    Ok(failures)
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// 启动外部窗口置顶守护与右上角微型图钉角标同步服务：
+/// 1. 彻底淘汰旧版 700ms 连续截屏录屏与大尺寸 WebView 镜像（消除高 CPU/GPU/电池开销）；
+/// 2. 纯事件驱动 + 极低频（1.5s）静默守护：利用 Accessibility AXRaise 原生将目标物理窗口提至最前；
+/// 3. 在被置顶物理窗口的右上角附着一个 28×28 像素的极微型原生图钉角标，点击直接解除置顶。
+fn start_window_pin_guard_and_badges(app: &AppHandle) {
+    let Some(host) = app
+        .try_state::<Arc<DesktopHost>>()
+        .map(|state| state.inner().clone())
+    else {
+        return;
+    };
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let mut last_foreground_pid = 0;
+        let mut had_pinned_windows = false;
+        loop {
+            let pinned_entries = host.window_pin.list_pinned_windows();
+            if pinned_entries.is_empty() {
+                if had_pinned_windows {
+                    // 当置顶列表归零变空时，确保在主线程执行一次 reconcile_pin_badges 清理所有残余角标窗口
+                    had_pinned_windows = false;
+                    let app_for_main = app_handle.clone();
+                    let _ = app_handle.run_on_main_thread(move || {
+                        reconcile_pin_badges(&app_for_main, vec![]);
+                    });
+                }
+                // 无置顶窗口时进行深睡，避免消耗任何 CPU
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                continue;
+            }
+
+            had_pinned_windows = true;
+
+            // 检查当前前台应用
+            let current_fg_pid = host
+                .window_pin
+                .current_foreground_window()
+                .ok()
+                .map(|w| w.process_id)
+                .unwrap_or(0);
+
+            // 若用户切换了前台应用，并且前台不是被置顶的应用，则执行保持置顶动作
+            if current_fg_pid != last_foreground_pid && current_fg_pid > 0 {
+                last_foreground_pid = current_fg_pid;
+                let is_pinned_fg = pinned_entries
+                    .iter()
+                    .any(|p| p.info.process_id == current_fg_pid);
+                if !is_pinned_fg {
+                    host.window_pin.raise_all_pinned_windows();
+                }
+            }
+
+            // 收集需显示的图钉角标位置
+            let mut badges = Vec::new();
+            for pinned in pinned_entries {
+                match host
+                    .os_hal
+                    .window_controller
+                    .get_window_info(pinned.info.handle)
+                {
+                    Ok(info) if info.process_id == pinned.info.process_id => {
+                        // Windows clients may temporarily reset their own extended style.
+                        // Reassert a managed pin without moving or activating the window.
+                        if host
+                            .window_pin
+                            .maintain_managed_pin(info.handle, !info.is_topmost)
+                            .unwrap_or(false)
+                        {
+                            badges.push(info);
+                        }
+                    }
+                    Ok(_) => host.window_pin.forget_closed_window(pinned.info.handle),
+                    Err(_) => {
+                        #[cfg(target_os = "windows")]
+                        if unsafe {
+                            windows::Win32::UI::WindowsAndMessaging::IsWindow(Some(
+                                windows::Win32::Foundation::HWND(
+                                    pinned.info.handle as *mut std::ffi::c_void,
+                                ),
+                            ))
+                            .as_bool()
+                        } {
+                            continue;
+                        }
+                        // 目标外部物理窗口已被用户在外部关闭，自动从置顶列表中解钉并清理
+                        host.window_pin.forget_closed_window(pinned.info.handle);
+                    }
+                }
+            }
+
+            let app_for_main = app_handle.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                reconcile_pin_badges(&app_for_main, badges);
+            });
+
+            // 1.5 秒低频守护，零录屏、零图像编解码，CPU 趋近于 0.0%
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+        }
+    });
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn reconcile_pin_badges(app: &AppHandle, badges: Vec<ExternalWindowInfo>) {
+    if is_exiting(app) {
+        return;
+    }
+    use std::collections::HashSet;
+
+    let mut desired = HashSet::new();
+    for info in badges {
+        let label = format!("pin-badge-{}", info.handle);
+        desired.insert(label.clone());
+
+        // Windows enumeration reports physical pixels; leave caption buttons unobstructed.
+        let inset = if cfg!(target_os = "windows") {
+            148.0
+        } else {
+            36.0
+        };
+        let scale = if cfg!(target_os = "windows") {
+            app.monitor_from_point((info.x + info.width as i32 - 1) as f64, info.y as f64)
+                .ok()
+                .flatten()
+                .map(|m| m.scale_factor())
+                .unwrap_or(1.0)
+        } else {
+            1.0
+        };
+        let badge_x = (info.x + info.width as i32 - (inset * scale) as i32).max(info.x);
+        let badge_y = info.y + (4.0 * scale) as i32;
+        let position = if cfg!(target_os = "windows") {
+            tauri::Position::Physical(tauri::PhysicalPosition::new(badge_x, badge_y))
+        } else {
+            tauri::Position::Logical(tauri::LogicalPosition::new(badge_x as f64, badge_y as f64))
+        };
+
+        if let Some(window) = app.get_webview_window(&label) {
+            let _ = window.set_position(position);
+            #[cfg(target_os = "windows")]
+            let _ = configure_badge_geometry(&window, badge_x, badge_y, scale);
+            let _ = show_passive_window(&window);
+            continue;
+        }
+
+        let url = format!(
+            "index.html?mode=native&window=pin-badge&handle={}",
+            info.handle
+        );
+        let created = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+            .title(format!("📌 {}", info.process_name))
+            .inner_size(28.0, 28.0)
+            .min_inner_size(28.0, 28.0)
+            .max_inner_size(28.0, 28.0)
+            .position(badge_x as f64, badge_y as f64)
+            .decorations(false)
+            .transparent(true)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .focused(false)
+            .focusable(false)
+            .visible(false)
+            .resizable(false)
+            .build();
+        if let Ok(window) = created {
+            let _ = window.set_position(position);
+            #[cfg(target_os = "windows")]
+            let _ = configure_badge_geometry(&window, badge_x, badge_y, scale);
+            let _ = show_passive_window(&window);
+        }
+    }
+
+    // 自动清理已被取消置顶的角标窗口以及历史旧镜像窗口
+    for (label, window) in app.webview_windows() {
+        if label.starts_with("pin-badge-") && !desired.contains(&label) {
+            let _ = window.destroy();
+        } else if label.starts_with("pin-mirror-") {
+            let _ = window.destroy();
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn configure_badge_geometry(
+    window: &tauri::WebviewWindow,
+    x: i32,
+    y: i32,
+    scale: f64,
+) -> CoreResult<()> {
+    use windows::Win32::UI::WindowsAndMessaging::*;
+    let hwnd = window.hwnd().map_err(to_core_error)?;
+    let hwnd = windows::Win32::Foundation::HWND(hwnd.0);
+    let side = (28.0 * scale).round() as i32;
+    // Windows clamps very small windows to caption-button width during creation.
+    // Remove the frame before applying the physical size, without taking focus.
+    unsafe {
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
+        let frame = WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
+        SetWindowLongPtrW(hwnd, GWL_STYLE, (style & !frame.0) as isize);
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            side,
+            side,
+            SWP_FRAMECHANGED | SWP_NOACTIVATE,
+        )
+        .map_err(to_core_error)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn show_passive_window(window: &tauri::WebviewWindow) -> CoreResult<()> {
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::UI::WindowsAndMessaging::*;
+        let raw = window.hwnd().map_err(to_core_error)?;
+        let hwnd = windows::Win32::Foundation::HWND(raw.0);
+        unsafe {
+            let style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+            SetWindowLongPtrW(
+                hwnd,
+                GWL_EXSTYLE,
+                (style | WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0) as isize,
+            );
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    window.show().map_err(to_core_error)
+}
+
+/// 启动系统剪贴板实时后台监听器（支持文本与图片双通道实时自动捕获）
+fn start_clipboard_listener(app: &AppHandle) {
+    let Some(host) = app
+        .try_state::<Arc<DesktopHost>>()
+        .map(|state| state.inner().clone())
+    else {
+        return;
+    };
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let mut clipboard: Option<arboard::Clipboard> = None;
+        let mut last_text: Option<String> = None;
+        let mut last_image_hash: Option<String> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+            let result = host.kernel().registry().with_enabled("clipboard", || {
+                if !host.kernel().context().config.read().clipboard.enabled {
+                    clipboard = None;
+                    return Ok(());
+                }
+                if clipboard.is_none() {
+                    let mut opened = arboard::Clipboard::new().map_err(to_core_error)?;
+                    last_text = opened.get_text().ok();
+                    last_image_hash = None;
+                    clipboard = Some(opened);
+                    return Ok(());
+                }
+                let clipboard = clipboard.as_mut().expect("initialized above");
+                // 通道一：优先检查系统剪贴板文本变更
+                match clipboard.get_text() {
+                    Ok(text) if !text.trim().is_empty() && Some(&text) != last_text.as_ref() => {
+                        // 敏感内容（带 Windows 排除历史标记 / macOS ConcealedType）绝不收录进历史；
+                        // 秘密写入方还须持有屏蔽租约，两层防护见 os_hal::secure 契约文档。
+                        if os_hal::clipboard_content_is_concealed() {
+                            last_text = Some(text);
+                            return Ok(());
+                        }
+                        let ctx = host.kernel().context();
+                        if let Ok(Some(_)) = host.clipboard.capture_text(ctx, &text, None) {
+                            emit_update(&app_handle);
+                        }
+                        last_text = Some(text);
+                        last_image_hash = None;
+                        return Ok(());
+                    }
+                    Ok(text) => {
+                        last_text = Some(text);
+                    }
+                    Err(_) => {
+                        // 若读取文本失败，可能是剪贴板当前为图片，进入通道二检查图片变更
+                        if let Ok(image) = clipboard.get_image() {
+                            let img_hash =
+                                mod_clipboard::ClipboardModule::compute_hash("image", &image.bytes);
+                            if Some(&img_hash) != last_image_hash.as_ref() {
+                                // 敏感内容（带排除历史标记）不收录进剪贴板历史。
+                                if os_hal::clipboard_content_is_concealed() {
+                                    last_image_hash = Some(img_hash);
+                                    return Ok(());
+                                }
+                                let ctx = host.kernel().context();
+                                if let Ok(Some(_)) = host.clipboard.capture_image_rgba(
+                                    ctx,
+                                    image.width as u32,
+                                    image.height as u32,
+                                    &image.bytes,
+                                    None,
+                                ) {
+                                    emit_update(&app_handle);
+                                }
+                                last_image_hash = Some(img_hash);
+                                last_text = None;
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            });
+            if result.is_err() {
+                clipboard = None;
+                last_text = None;
+                last_image_hash = None;
+            }
+        }
+    });
+}
+
+fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error> {
+    let host = app.state::<Arc<DesktopHost>>();
+    let lang = host
+        .kernel()
+        .context()
+        .config
+        .read()
+        .general
+        .language
+        .to_ascii_lowercase();
+
+    let lbl_shot = if lang.starts_with("en") {
+        "Capture Region"
+    } else if lang.starts_with("ja") || lang.starts_with("jp") {
+        "範囲スクリーンショット"
+    } else {
+        "区域截图"
+    };
+    let (lbl_dash, lbl_clip, lbl_ink, lbl_sticky, lbl_pin, lbl_quit) = if lang.starts_with("en") {
+        (
+            "Open Dashboard",
+            "Clipboard History",
+            "Screen Annotation",
+            "New Sticky Note",
+            "Pin Active Window",
+            "Quit",
+        )
+    } else if lang.starts_with("ja") || lang.starts_with("jp") {
+        (
+            "ダッシュボードを開く",
+            "クリップボード履歴",
+            "画面注釈",
+            "新規付箋ノート",
+            "アクティブウィンドウを固定",
+            "終了",
+        )
+    } else {
+        (
+            "打开主控台",
+            "剪贴板历史",
+            "屏幕注释",
+            "新建置顶便笺",
+            "置顶当前窗口",
+            "退出",
+        )
+    };
+
+    let with_hotkey = |text: &str, action: &str| {
+        host.kernel()
+            .context()
+            .shortcut_registry
+            .get_by_action(action)
+            .map(|binding| format!("{} ({})", text, binding.display_label))
+            .unwrap_or_else(|| text.to_string())
+    };
+    let lbl_shot = with_hotkey(lbl_shot, mod_screenshot::ACTION_CAPTURE);
+    let lbl_clip = with_hotkey(lbl_clip, ACTION_CLIPBOARD);
+    let lbl_ink = with_hotkey(lbl_ink, ACTION_SCREEN_INK);
+    let lbl_sticky = with_hotkey(lbl_sticky, ACTION_STICKY);
+    let lbl_pin = with_hotkey(lbl_pin, ACTION_PIN_FOREGROUND);
+    let dashboard = MenuItem::with_id(app, "tray_dashboard", lbl_dash, true, None::<&str>)?;
+    let mut quick_scripts: Vec<(String, String)> = Vec::new();
+    if host.kernel().registry().is_enabled("script_runner") {
+        for script in host
+            .script_runner
+            .list_scripts(host.kernel().context())
+            .unwrap_or_default()
+        {
+            if script.show_in_tray {
+                quick_scripts.push((format!("tray_script_{}", script.id), script.name.clone()));
+            }
+        }
+    }
+    let screenshot = MenuItem::with_id(
+        app,
+        "tray_screenshot",
+        lbl_shot,
+        host.kernel()
+            .registry()
+            .is_enabled(mod_screenshot::MODULE_ID),
+        None::<&str>,
+    )?;
+    let clipboard = MenuItem::with_id(
+        app,
+        "tray_clipboard",
+        lbl_clip,
+        host.kernel().registry().is_enabled("clipboard"),
+        None::<&str>,
+    )?;
+    let ink = MenuItem::with_id(
+        app,
+        "tray_ink",
+        lbl_ink,
+        host.kernel().registry().is_enabled("screen_ink"),
+        None::<&str>,
+    )?;
+    let sticky = MenuItem::with_id(
+        app,
+        "tray_sticky",
+        lbl_sticky,
+        host.kernel().registry().is_enabled("sticky_note"),
+        None::<&str>,
+    )?;
+    let pin = MenuItem::with_id(
+        app,
+        "tray_pin",
+        lbl_pin,
+        host.kernel().registry().is_enabled("window_pin")
+            && host.os_hal.window_controller.supports_external_topmost(),
+        None::<&str>,
+    )?;
+    let translator_item = MenuItem::with_id(
+        app,
+        "tray_translator",
+        "划词翻译",
+        host.kernel().registry().is_enabled("translator"),
+        None::<&str>,
+    )?;
+    let quit = MenuItem::with_id(app, "tray_quit", lbl_quit, true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &dashboard,
+            &screenshot,
+            &clipboard,
+            &translator_item,
+            &ink,
+            &sticky,
+            &pin,
+        ],
+    )?;
+    for (id, label) in quick_scripts {
+        let item = MenuItem::with_id(app, id, label, true, None::<&str>)?;
+        menu.append(&item)?;
+    }
+    menu.append(&quit)?;
+    Ok(menu)
+}
+
+fn update_tray_menu(app: &AppHandle) -> Result<(), tauri::Error> {
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        tray.set_menu(Some(build_tray_menu(app)?))?;
+    }
+    Ok(())
+}
+
+fn setup_tray(app: &AppHandle) -> Result<(), tauri::Error> {
+    let menu = build_tray_menu(app)?;
+
+    TrayIconBuilder::with_id("main-tray")
+        .icon(tauri::image::Image::from_bytes(include_bytes!(
+            "../icons/32x32.png"
+        ))?)
+        .menu(&menu)
+        .tooltip("All-in-One Toolbox")
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| {
+            if is_exiting(app) {
+                return;
+            }
+            match event.id.as_ref() {
+                "tray_dashboard" => {
+                    if let Some(host) = app.try_state::<Arc<DesktopHost>>() {
+                        let _ = host
+                            .kernel()
+                            .context()
+                            .window_pool
+                            .open_window(WindowSpec::dashboard("/overview"));
+                        emit_update(app);
+                    }
+                }
+                "tray_screenshot" => trigger_action(app, mod_screenshot::ACTION_CAPTURE),
+                "tray_clipboard" => trigger_action(app, ACTION_CLIPBOARD),
+                "tray_translator" => trigger_action(app, ACTION_TRANSLATOR),
+                "tray_ink" => trigger_action(app, ACTION_SCREEN_INK),
+                "tray_sticky" => trigger_action(app, ACTION_STICKY),
+                "tray_pin" => trigger_action(app, ACTION_PIN_FOREGROUND),
+                "tray_quit" => {
+                    app.exit(0);
+                }
+                id if id.starts_with("tray_script_") => {
+                    if let Some(host) = app.try_state::<Arc<DesktopHost>>() {
+                        if let Ok(script_id) = id.trim_start_matches("tray_script_").parse::<i64>()
+                        {
+                            if let Err(error) = host.script_runner.execute(
+                                host.kernel().context(),
+                                script_id,
+                                Vec::new(),
+                            ) {
+                                tracing::error!(script_id, %error, "Tray script execution failed");
+                            }
+                            emit_update(app);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+#[path = "../tests/support/gui_test.rs"]
+mod gui_test;
+#[path = "../tests/support/ui_smoke.rs"]
+mod ui_smoke;
+
+/// Starts the real cross-platform Tauri desktop application.
+pub fn run() {
+    let ui_smoke_test = std::env::args().any(|arg| arg == "--ui-smoke-test");
+    let keep_open = std::env::args().any(|arg| arg == "--keep-open");
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "windows")]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(Arc::new(crate::updates::UpdateState::default()));
+    let app = builder
+        .manage(Arc::new(ExitCoordinator::default()))
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![
+            ipc,
+            crate::screenshot_binary::screenshot_frame,
+            crate::screenshot_binary::screenshot_pin_image,
+            crate::screenshot_binary::screenshot_export,
+            crate::screenshot_binary::screenshot_scroll_image,
+            crate::screenshot_binary::screenshot_scroll_preview,
+            crate::screenshot_binary::screenshot_gif_image
+        ])
+        .setup(move |app| {
+            // 人工 GUI 回归可使用独立的数据目录，避免改动日常使用记录。
+            let app_data_dir = if let Some(path) = gui_test::data_dir() {
+                path
+            } else if ui_smoke_test {
+                std::env::temp_dir().join(format!("all-in-one-ui-smoke-{}", std::process::id()))
+            } else {
+                app.path().app_data_dir()?
+            };
+            let sticky_flush = Arc::new(StickyFlushCoordinator::new());
+            app.manage(sticky_flush.clone());
+            let backend = Arc::new(TauriWindowBackend::with_flush_coordinator(
+                app.handle().clone(),
+                sticky_flush,
+            ));
+            let native_hal = os_hal::NativeOsHal::new().into_bundle();
+            let script_environment = Arc::new(AioScriptEnvironment::new(
+                native_hal.selection_extractor.clone(),
+            ));
+            let script_events = Arc::new(TauriScriptEventSink::new(app.handle().clone()));
+            let script_hotkeys = Arc::new(TauriScriptHotkeySync::new(app.handle().clone()));
+            let host = Arc::new(DesktopHost::bootstrap_with_adapters_and_services(
+                app_data_dir,
+                false,
+                backend,
+                native_hal,
+                script_environment,
+                script_events,
+                script_hotkeys,
+            )?);
+            let event_app = app.handle().clone();
+            host.password_vault.service().set_event_sink(Some(Arc::new(
+                TauriVaultEventSink(event_app.clone()),
+            )));
+            host.media_proc.set_event_sink(Some(Arc::new(move |job| {
+                if job.status == mod_media_proc::MediaJobStatus::Completed {
+                    if let Some(path) = &job.output_path { crate::save_feedback::notify_saved(&event_app, &path.to_string_lossy()); }
+                }
+                let _ = event_app.emit(
+                    "media://job-progress",
+                    serde_json::json!({
+                        "job_id": job.id,
+                        "progress": job.progress,
+                        "speed": job.speed,
+                        "status": job.status,
+                        "job": job,
+                    }),
+                );
+            })));
+            // 仅真实桌面进程向截图模块注入系统剪贴板；无桌面测试保持「不可用」实现。
+            #[cfg(any(target_os = "windows", target_os = "macos"))]
+            host.set_vault_clipboard(Arc::new(os_hal::NativeOsHal::new()));
+            host.screenshot.set_clipboard(Arc::new(
+                crate::screenshot_clipboard::ArboardScreenshotClipboard,
+            ));
+            let app_handle_for_shot = app.handle().clone();
+            host.screenshot.set_event_sink(Arc::new(move |event, payload| {
+                let _ = app_handle_for_shot.emit(event, payload);
+            }));
+            // 翻译 API Key 改存系统钥匙串；原生烟测保持会话内存，隔离 GUI 测试使用独立条目名。
+            if !ui_smoke_test {
+                let service = if gui_test::data_dir().is_some() {
+                    format!("{}.qa", crate::secure_credentials::TRANSLATOR_KEYCHAIN_SERVICE)
+                } else {
+                    crate::secure_credentials::TRANSLATOR_KEYCHAIN_SERVICE.to_string()
+                };
+                if !host
+                    .translator_credentials
+                    .use_system_store(Arc::new(os_hal::NativeOsHal::new()), &service)
+                {
+                    tracing::warn!("System keychain unavailable; translator keys stay in session memory");
+                }
+            }
+            let selection_app = app.handle().clone();
+            host.translator.set_selection_sink(Arc::new(move || {
+                let _ =
+                    selection_app.emit_to("translate-popover", "translator://selection-ready", ());
+            }));
+            let trans_app = app.handle().clone();
+            host.translator
+                .set_event_sink(Arc::new(move |req_id, event| {
+                    let _ = trans_app.emit(
+                        "translator://stream-chunk",
+                        serde_json::json!({
+                            "request_id": req_id,
+                            "event": event,
+                        }),
+                    );
+                }));
+            app.manage(host);
+            #[cfg(target_os = "windows")]
+            crate::updates::start(app.handle());
+            sync_vault_native_observer(app.handle());
+
+            // 个别按键被其他程序占用时继续启动，失败项已记录并在对应功能页显示。
+            register_global_shortcuts(app.handle())?;
+            setup_tray(app.handle())?;
+            start_clipboard_listener(app.handle());
+            #[cfg(target_os = "macos")]
+            crate::translator_mouse::start(app.handle());
+            #[cfg(target_os = "windows")]
+            crate::translator_mouse::start(app.handle());
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            if app
+                .state::<Arc<DesktopHost>>()
+                .os_hal
+                .window_controller
+                .supports_external_topmost()
+            {
+                start_window_pin_guard_and_badges(app.handle());
+            }
+
+            if !ui_smoke_test && !std::env::args().any(|arg| arg == "--silent") {
+                let host = app.state::<Arc<DesktopHost>>();
+                let initial_route = std::env::var("ALL_IN_ONE_DASHBOARD_ROUTE")
+                    .unwrap_or_else(|_| "/overview".to_string());
+                if let Some(module) = crate::preferences::feature_for_legacy_route(&initial_route) {
+                    host.open_feature_panel(module)?;
+                } else {
+                    host.kernel().context().window_pool.open_window(WindowSpec::dashboard(&initial_route))?;
+                }
+            }
+            if ui_smoke_test {
+                ui_smoke::run_ui_smoke_checks(app.handle().clone(), keep_open);
+            }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // shutdown 工作线程负责销毁窗口；原生事件回调只让 AppKit 继续排空清理操作。
+            if is_exiting(window.app_handle()) {
+                return;
+            }
+            let Some(host) = window.app_handle().try_state::<Arc<DesktopHost>>() else {
+                return;
+            };
+            let pool = &host.kernel().context().window_pool;
+            match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    let label = window.label();
+                    host.set_shortcut_recorder(label,false);
+                    if label == "dashboard" {
+                        // 红点关闭主界面只隐藏；守护进程、快捷键和菜单栏保持运行。
+                        api.prevent_close();
+                        host.password_vault.notify_page_close();
+                        if let Err(error) = window.hide() {
+                            tracing::warn!(%error, "Failed to hide dashboard");
+                        }
+                        return;
+                    }
+                    if label == "feature-password_vault" {
+                        host.password_vault.notify_page_close();
+                    }
+                    if label == "translate-popover" {
+                        host.translator.cancel_current_translation();
+                    }
+                    if let Some(note_id) = label.strip_prefix("sticky-note-") {
+                        // 标题和正文还在页面内存里。先不销毁 WebView，等页面把最新状态写入后再关闭。
+                        api.prevent_close();
+                        let note_id = note_id.to_string();
+                        if let Err(error) =
+                            window.emit("sticky://flush-close", json!({ "id": note_id }))
+                        {
+                            tracing::warn!(%error, "Sticky note flush-close event failed; closing without a page flush");
+                            let _ = host
+                                .sticky_note
+                                .close_note(host.kernel().context(), &note_id);
+                        }
+                    } else if let Some(pin_id) =
+                        label.strip_prefix(mod_screenshot::pins::PIN_LABEL_PREFIX)
+                    {
+                        // 系统关闭贴图（如 Cmd+W）：销毁窗口并释放贴图 PNG。
+                        let _ = pool.destroy_window(label);
+                        host.screenshot.forget_pin(pin_id);
+                    } else if label == mod_screenshot::CONTROL_LABEL {
+                        let _ = host.screenshot.cancel_scroll(host.kernel().context());
+                        let _ = host.screenshot.cancel_gif(host.kernel().context());
+                        let _ = pool.destroy_window(label);
+                    } else if label == mod_screenshot::PREVIEW_LABEL {
+                        let _ = pool.destroy_window(label);
+                    } else if label == mod_screenshot::OVERLAY_LABEL {
+                        // 导出持有会话 gate，并可能等待主线程创建贴图或恢复遮罩层级。
+                        // 原生 CloseRequested 在主线程派发，不能在这里等待同一把 gate。
+                        api.prevent_close();
+                        let session_id = host
+                            .screenshot
+                            .session_info(host.kernel().context(), None)
+                            .ok()
+                            .map(|session| session.session_id);
+                        if let Some(session_id) = session_id {
+                            let host = host.inner().clone();
+                            let app = window.app_handle().clone();
+                            tauri::async_runtime::spawn_blocking(move || {
+                                // 等待中的旧窗口关闭请求不得取消后来启动的新会话。
+                                if let Err(error) = host.screenshot.cancel_capture(
+                                    host.kernel().context(),
+                                    Some(&session_id),
+                                ) {
+                                    tracing::warn!(%error, "Failed to cancel screenshot after native close request");
+                                }
+                                emit_update(&app);
+                            });
+                        } else {
+                            let _ = pool.destroy_window(label);
+                        }
+                    } else {
+                        let _ = pool.destroy_window(label);
+                    }
+                }
+                WindowEvent::Destroyed => {
+                    host.set_shortcut_recorder(window.label(),false);
+                }
+                WindowEvent::Focused(false) => {
+                    host.set_shortcut_recorder(window.label(),false);
+                    if window.label() == "clipboard-popup"
+                        && crate::clipboard_window::owns_foreground(window)
+                    {
+                        // WebView2 内部交焦不属于用户离开候选窗；原生前台仍由它持有。
+                        #[cfg(debug_assertions)]
+                        eprintln!("Clipboard popup internal focus transition; keeping foreground window");
+                        return;
+                    }
+                    if pool.on_window_blur(window.label()).unwrap_or(false)
+                        && window.label() == "translate-popover"
+                    {
+                        host.translator.cancel_current_translation();
+                    }
+                }
+                _ => {}
+            }
+            emit_update(window.app_handle());
+        })
+        .build(tauri::generate_context!())
+        .expect("failed to build Tauri application");
+
+    app.run(|app, event| {
+        #[cfg(target_os = "macos")]
+        if matches!(event, RunEvent::Exit) {
+            crate::translator_mouse::stop();
+        }
+        #[cfg(target_os = "windows")]
+        if matches!(event, RunEvent::Exit) {
+            crate::translator_mouse::stop();
+        }
+        #[cfg(target_os = "macos")]
+        if matches!(event, RunEvent::Reopen { .. }) && !is_exiting(app) {
+            if let Some(host) = app.try_state::<Arc<DesktopHost>>() {
+                let _ = host.kernel().context().window_pool.open_window(WindowSpec::dashboard("/overview"));
+            }
+        }
+        if let RunEvent::ExitRequested { api, code, .. } = event {
+            // Tauri 在最后一个原生窗口销毁后发送无退出码事件。
+            // 显式退出（菜单栏或界面退出）走带退出码的关闭事务。
+            if code.is_none() && !is_exiting(app) {
+                api.prevent_exit();
+                return;
+            }
+            let exit = app.state::<Arc<ExitCoordinator>>().inner().clone();
+            match exit.request() {
+                ExitDecision::Allow => {}
+                ExitDecision::Wait => api.prevent_exit(),
+                ExitDecision::StartShutdown => {
+                    if let Some(host)=app.try_state::<Arc<DesktopHost>>() {
+                        *host.shortcut_recording_owner.write()=None;
+                    }
+                    api.prevent_exit();
+                    stop_vault_native_observer();
+                    if let Some(host) = app.try_state::<Arc<DesktopHost>>() {
+                        host.password_vault.notify_page_close();
+                    }
+                    if let Err(error) = app.global_shortcut().unregister_all() {
+                        tracing::warn!(%error, "Failed to unregister shortcuts during exit");
+                    }
+                    let host = app.try_state::<Arc<DesktopHost>>().map(|host| host.inner().clone());
+                    let app = app.clone();
+                    let exit = exit.clone();
+                    tauri::async_runtime::spawn(async move {
+                        // 先把便笺页面未落盘的 400 ms 防抖内容冲刷完，再开始拆内核。
+                        // 任何失败都撤销退出，保留窗口与内容；此路径尚未停用其他模块。
+                        let flush_host = host.clone();
+                        let flush = tauri::async_runtime::spawn_blocking(move || {
+                            flush_host
+                                .map(|host| {
+                                    host.sticky_note
+                                        .flush_open_windows(host.kernel().context())
+                                })
+                                .transpose()
+                        })
+                        .await;
+                        let flush_error = match flush {
+                            Ok(Ok(_)) => None,
+                            Ok(Err(error)) => Some(error.to_string()),
+                            Err(error) => {
+                                Some(format!("便笺保存工作线程意外失败：{}", error))
+                            }
+                        };
+                        if let Some(reason) = flush_error {
+                            let app_for_main = app.clone();
+                            let exit_for_main = exit.clone();
+                            let _ = app.run_on_main_thread(move || {
+                                exit_for_main.abort();
+                                let _ = register_global_shortcuts(&app_for_main);
+                                sync_vault_native_observer(&app_for_main);
+                                report_sticky_shutdown_blocked(&app_for_main, &reason);
+                            });
+                            return;
+                        }
+                        // shutdown 等待现有活动租约及窗口操作；主线程必须继续处理 AppKit 事件。
+                        let result = tauri::async_runtime::spawn_blocking(move || {
+                            host.map(|host| {
+                                let result = host.kernel().shutdown();
+                                host.clear_vault_clipboard();
+                                result
+                            }).transpose()
+                        }).await;
+                        match result {
+                            Ok(Ok(_)) => {}
+                            Ok(Err(error)) => tracing::warn!(%error, "Kernel shutdown reported an error during exit"),
+                            Err(error) => tracing::error!(%error, "Kernel shutdown worker failed during exit"),
+                        }
+                        exit.finish_shutdown();
+                        #[cfg(target_os = "windows")]
+                        crate::updates::install_after_shutdown(&app);
+                        app.exit(code.unwrap_or(0));
+                    });
+                }
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod compact_panel_tests {
+    use super::*;
+    #[test]
+    fn feature_url_preserves_its_own_route_and_dashboard_routes_stay_separate() {
+        let spec = WindowSpec::feature("media_proc", "Media");
+        assert_eq!(
+            TauriWindowBackend::frontend_url(&spec),
+            "index.html?mode=native&window=feature-media_proc&route=feature/media_proc"
+        );
+        let home = WindowSpec::dashboard("/overview");
+        assert_eq!(
+            TauriWindowBackend::frontend_url(&home),
+            "index.html?mode=native&window=dashboard&route=dashboard/overview"
+        );
+        assert!(home.width < spec.width);
+        assert_eq!(
+            spec.policy,
+            app_core::WindowLifecyclePolicy::Transient {
+                destroy_on_blur: false
+            }
+        );
+    }
+}

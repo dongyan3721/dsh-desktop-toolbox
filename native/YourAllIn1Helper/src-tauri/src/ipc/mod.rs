@@ -1,0 +1,80 @@
+//! IPC 路由与模块开关检查，防止直接调用已关闭功能。
+use super::*;
+mod clipboard;
+mod kernel;
+mod media;
+mod screen_ink;
+mod screenshot;
+mod script;
+mod sticky_note;
+mod translator;
+mod usage;
+mod vault;
+mod window_pin;
+impl DesktopHost {
+    pub(crate) fn dispatch_inner(&self, cmd: &str, args: Value) -> CoreResult<Value> {
+        if cmd.starts_with("kernel_") {
+            return self.dispatch_kernel(cmd, args);
+        }
+        if cmd.starts_with("vault_") {
+            return Err(CoreError::Config(
+                "Vault IPC requires the async native dispatcher".to_string(),
+            ));
+        }
+        let (module_id, handler): (&str, fn(&Self, &str, Value) -> CoreResult<Value>) =
+            if cmd.starts_with("clipboard_") {
+                ("clipboard", Self::dispatch_clipboard)
+            } else if cmd.starts_with("media_") {
+                ("media_proc", Self::dispatch_media)
+            } else if cmd.starts_with("sticky_") {
+                ("sticky_note", Self::dispatch_sticky_note)
+            } else if cmd.starts_with("winpin_") {
+                ("window_pin", Self::dispatch_window_pin)
+            } else if cmd.starts_with("script_") {
+                ("script_runner", Self::dispatch_script)
+            } else if cmd.starts_with("ink_") {
+                ("screen_ink", Self::dispatch_screen_ink)
+            } else if cmd.starts_with("usage_") {
+                ("app_usage", Self::dispatch_usage)
+            } else if cmd.starts_with("screenshot_") {
+                ("screenshot", Self::dispatch_screenshot)
+            } else if cmd.starts_with("translator_") {
+                ("translator", Self::dispatch_translator)
+            } else {
+                return Err(CoreError::Config(format!("Unknown IPC command: {}", cmd)));
+            };
+        if module_id == "sticky_note" && is_sticky_flushing_write(cmd) {
+            let note_id = args.get("id").and_then(Value::as_str).unwrap_or("");
+            if self.sticky_note.is_flushing(note_id) {
+                // 停用/退出冲刷时模块已不在 enabled 集合中；只放行页面最后一批保存，
+                // 不重新开放创建、打开或删除等新操作。
+                return handler(self, cmd, args);
+            }
+        }
+        self.kernel
+            .registry()
+            .with_enabled(module_id, || handler(self, cmd, args))
+    }
+
+    pub fn module_catalog(&self) -> Value {
+        let registry = self.kernel.registry();
+        Value::Array(app_core::MODULE_CATALOG.iter().map(|module| {
+            let supported = module.id != "window_pin" || self.os_hal.window_controller.supports_external_topmost();
+            json!({ "number": module.number, "id": module.id, "name": module.name,
+                "available": registry.contains(module.id), "enabled": registry.is_enabled(module.id),
+                "supported": supported,
+                "unavailable_reason": if !registry.contains(module.id) { "待开发" } else if !supported { "当前系统不支持外部窗口真正置顶" } else { "" },
+            })
+        }).collect())
+    }
+}
+
+fn is_sticky_flushing_write(cmd: &str) -> bool {
+    matches!(
+        cmd,
+        "sticky_begin_session"
+            | "sticky_save_content"
+            | "sticky_update_theme"
+            | "sticky_update_window_state"
+    )
+}

@@ -1,0 +1,105 @@
+{
+  "date": "2026-10-27/28",
+  "evidence": [
+    {
+      "file": "build.json",
+      "sha256": "58967c2888fe06f7f015d188e6887333baed2e49efd6be42666fefe3b1aebf1a"
+    },
+    {
+      "file": "final-build.json",
+      "sha256": "357343087d66f47df36053bc66251b35f187df174b36294694b7318c9a5d15e7"
+    },
+    {
+      "file": "gui-final-observations.json",
+      "sha256": "8252be4f867798155afbad8bac1e884b2ec6dcedf190105a6902a69526f1065c"
+    },
+    {
+      "file": "integrated-build.json",
+      "sha256": "fa226fcb5d98cdefd671c44499df0f236fe46f40613429b9e0702a75faffc30e"
+    },
+    {
+      "file": "qa-build.json",
+      "sha256": "ace47a16c99fbd92ee514ce467651b51b8c784391659829782f0802df782c8bc"
+    },
+    {
+      "file": "regressions-final.log",
+      "sha256": "7fcf8efa182d267ac2a36ebfec9ac13f4a8f1f29a5511b98fe65ffedcbc15a40"
+    },
+    {
+      "file": "rust-complete.log",
+      "sha256": "b23c93b11b66c2f1e13a53d5a3b7445fd7d18d38e00da32afe53a4b6501f810a"
+    },
+    {
+      "file": "rust-final.log",
+      "sha256": "5f2c32a62b809bdb6a8201a206dffa48316ffa80d9d9ae11bd162aa33a5674dd"
+    },
+    {
+      "file": "rust-interim-integrated.log",
+      "sha256": "6165292312a8650df2ed698b2a03e665f8116b2d814bdbb61e5b5b98bc5b76ac"
+    },
+    {
+      "file": "rust-tests.log",
+      "sha256": "3b1afb4836cfd5ce6abcc7162aff5517eee90e2512a8723b6d1fe9fe9464872e"
+    },
+    {
+      "file": "sticky-acl-after.log",
+      "sha256": "4279ce36410192ae5ecd70508b5be2f794e2094841fd26d41565cc664ee665c4"
+    },
+    {
+      "file": "sticky-acl-before.log",
+      "sha256": "d4831298d0db91f5e9ee876de9df402620e5411ea00d4286ad4bbf5e034129d6"
+    },
+    {
+      "file": "sticky-close-before.log",
+      "sha256": "961d22978f5afaac8b9d1f6b7b312b7afefbd4d4ae0be57581c11dbf86118907"
+    },
+    {
+      "file": "sticky-close-pending-fix.test.mjs",
+      "sha256": "5f5c9808f44f0a5f2c028d9ca6ac96dc03f023ea37b7a3c02f8af4817b66e1fa"
+    },
+    {
+      "file": "sticky-preview-production.png",
+      "sha256": "eebcb22a202e90b93e89f5c69b0164271065008e47f844c1a739b5b8a07ce770"
+    },
+    {
+      "file": "ui-build.log",
+      "sha256": "0296b050c9f9db3b86df58524a237c298b99f27d579470bbf5d6096a3a453a2b"
+    },
+    {
+      "file": "ui-complete-build.log",
+      "sha256": "d6286795133dce7adac2bcc654f7a220cf28c116e682109f337da1d67ce82373"
+    },
+    {
+      "file": "ui-complete.log",
+      "sha256": "1b73262265d077f4bbc452f36c84f30ae5812dd0b296af11894089f7afb8e0ea"
+    },
+    {
+      "file": "ui-final-build.log",
+      "sha256": "3650cc7cc5ffab5478929f4970b07c9fc43034a1efabef96792330d9cfcfbee5"
+    },
+    {
+      "file": "ui-final.log",
+      "sha256": "da7218219f44783f357ace29788daa27bfd003c86aa4e294a916f8f70f2d34f1"
+    },
+    {
+      "file": "ui-interim-build.log",
+      "sha256": "a021cad5fb5a16f16bc39e98b16e6362292eb366b002eb3d87c3d9b645b4af39"
+    },
+    {
+      "file": "ui-interim-integrated.log",
+      "sha256": "013a75e90bd727fd2282a05c5655b020f6c2fcd08e8f0091c05041bc45a5186e"
+    },
+    {
+      "file": "ui-tests.log",
+      "sha256": "3f12d2ea52dcd8d65cd1897c6ce56c936a32630c3993091c6e230d9c8acba9de"
+    },
+    {
+      "file": "vault-expiry-before.log",
+      "sha256": "b2d5824689347c0af506fa5af0d90299496ac5fb5ab2ab46d640923fa896b581"
+    },
+    {
+      "file": "vault-expiry-pending-fix.test.mjs",
+      "sha256": "876e2bebb85ac36fd14716daab386259527ff697cf322f172e89ca6b49b0697c"
+    }
+  ]
+}

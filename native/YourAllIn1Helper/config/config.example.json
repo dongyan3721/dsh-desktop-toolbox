@@ -1,0 +1,35 @@
+{
+  "config_version": 4,
+  "general": {
+    "launch_at_login": false,
+    "show_tray_icon": true,
+    "language": "zh-CN",
+    "theme": "system"
+  },
+  "modules": {
+    "enabled": {
+      "screenshot": true,
+      "clipboard": true,
+      "screen_ink": true,
+      "sticky_note": true,
+      "app_usage": true,
+      "script_runner": true,
+      "translator": true,
+      "media_proc": true,
+      "window_pin": true,
+      "password_vault": true
+    },
+    "settings": {
+      "media_proc": {
+        "output_dir": null,
+        "max_concurrent_jobs": 2,
+        "history_limit": 200
+      }
+    }
+  },
+  "clipboard": {
+    "enabled": true,
+    "max_history_items": 100,
+    "capture_images": true
+  }
+}
