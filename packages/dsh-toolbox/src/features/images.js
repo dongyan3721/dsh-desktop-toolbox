@@ -57,10 +57,24 @@ function assertKnownArguments(input, allowed) {
   }
 }
 
+/**
+ * Reject path text that cannot round-trip through JSON/UTF-8 or Windows paths.
+ * Valid non-ASCII path text is preserved unchanged.
+ */
+function pathTextViolation(value) {
+  if (typeof value !== 'string') return 'must be a string'
+  if (value.trim() === '') return 'must not be empty'
+  for (const character of value) {
+    const codePoint = character.codePointAt(0)
+    if (codePoint >= 0xD800 && codePoint <= 0xDFFF) return 'must not contain unpaired surrogates'
+    if (codePoint < 0x20) return 'must not contain control characters'
+  }
+  return null
+}
+
 function requirePath(value, field) {
-  if (typeof value !== 'string') throw invalidRequest(`${field} must be a string`)
-  if (value.trim() === '') throw invalidRequest(`${field} must not be empty`)
-  if (value.includes('\0')) throw invalidRequest(`${field} must not contain NUL`)
+  const violation = pathTextViolation(value)
+  if (violation) throw invalidRequest(`${field} ${violation}`)
   return value
 }
 
@@ -75,7 +89,7 @@ function normalizeImageResult(value) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw fail('INTERNAL', 'native bridge returned an invalid image conversion result')
   }
-  if (typeof value.outputPath !== 'string' || typeof value.format !== 'string'
+  if (pathTextViolation(value.outputPath) !== null || typeof value.format !== 'string'
     || !SUPPORTED_FORMATS.includes(value.format)) {
     throw fail('INTERNAL', 'native bridge returned an invalid image conversion result')
   }
@@ -123,9 +137,12 @@ export function createImageTools(bridge, options = {}) {
 
         const authorizePaths = requireAuthorizer(options)
         const allowed = await authorizePaths({ inputPath, outputPath, format, signal })
+        // Cancellation during authorization must not send a request.
         signal.throwIfAborted()
         if (allowed !== true) throw accessDenied('图片路径授权被拒绝，未执行转换')
 
+        // Once dispatched, the bridge owns the terminal outcome. Do not
+        // re-check the signal here: an authoritative success stays successful.
         const result = await bridge.request(
           'media.convert_image',
           { inputPath, outputPath, format },
