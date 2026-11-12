@@ -1,6 +1,9 @@
 // Acceptance-only Cordis driver: runs inside the installed dsh CLI, without an LLM request.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { imageDimensions } from './image-fixture.mjs';
 
 export const name = 'toolbox-profile-acceptance';
 export const inject = ['tools'];
@@ -29,6 +32,23 @@ async function run(ctx, signal) {
   };
   const status = await call('toolbox_status', {});
   assert.equal(status.nativeConnected, true);
+  if (process.env.DSH_TOOLBOX_ACCEPTANCE_PHASE === 'images') {
+    const root = process.env.DSH_TOOLBOX_ACCEPTANCE_MEDIA;
+    assert.ok(root);
+    await ctx.loader.update(entry.id, { config: {
+      dataDir: join(process.env.DSH_HOME, 'toolbox-data'),
+      enableImages: true, readRoots: [join(root, 'inputs')], writeRoots: [join(root, 'outputs')],
+    } });
+    await ctx.loader.await();
+    await entry.fiber.await();
+    for (const format of ['png', 'jpeg', 'webp', 'bmp', 'ico']) {
+      const outputPath = join(root, 'outputs', `converted.${format}`);
+      const result = await call('toolbox_image_convert', { inputPath: join(root, 'inputs', 'generated.bmp'), outputPath, format });
+      assert.equal(result.format, format);
+      assert.deepEqual(imageDimensions(await readFile(outputPath), format), [2, 2]);
+    }
+    return { nativeConnected: true, realImageFormats: 5, reloadedConfiguration: true, source: entry.options.name };
+  }
   const token = process.env.DSH_TOOLBOX_ACCEPTANCE_TOKEN || `acceptance-${randomUUID()}`;
   if (process.env.DSH_TOOLBOX_ACCEPTANCE_PHASE === 'restart') {
     const found = await call('toolbox_note_search', { query: token });

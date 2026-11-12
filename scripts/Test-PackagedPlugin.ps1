@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory=$true)][string]$Package,
     [string]$Dsh = 'E:/deepseek-harness/resources/runtime/cli/bin/dsh.cmd',
-    [string]$PreviousPackage = ''
+    [string]$PreviousPackage = '',
+    [switch]$Images
 )
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/Use-ProjectEnvironment.ps1"
@@ -40,6 +41,15 @@ if ($PreviousPackage) {
     Invoke-AcceptanceDsh 'upgrade.log' @('plugin','--profile',$profileName,'add',$packagePath)
     Invoke-AcceptanceDsh 'upgraded-restart.log' @('--profile',$profileName,'--patch',$driverPatch)
     if (!(Select-String -LiteralPath (Join-Path $artifactDir 'upgraded-restart.log') -Pattern 'persistedAcrossProfileRestart' -Quiet)) { throw 'Upgrade persistence check failed' }
+}
+if ($Images) {
+    $env:DSH_TOOLBOX_ACCEPTANCE_MEDIA = Join-Path $env:DSH_HOME 'media-fixtures'
+    New-Item -ItemType Directory -Force -Path (Join-Path $env:DSH_TOOLBOX_ACCEPTANCE_MEDIA 'inputs'),(Join-Path $env:DSH_TOOLBOX_ACCEPTANCE_MEDIA 'outputs') | Out-Null
+    node --input-type=module -e "import {pathToFileURL} from 'node:url'; import {writeFileSync} from 'node:fs'; const {tinyBmp}=await import(pathToFileURL(process.argv[1])); writeFileSync(process.argv[2],tinyBmp());" (Join-Path $PSScriptRoot 'image-fixture.mjs') (Join-Path $env:DSH_TOOLBOX_ACCEPTANCE_MEDIA 'inputs/generated.bmp')
+    if ($LASTEXITCODE -ne 0) { throw 'Image fixture creation failed' }
+    $env:DSH_TOOLBOX_ACCEPTANCE_PHASE = 'images'
+    Invoke-AcceptanceDsh 'images.log' @('--profile',$profileName,'--patch',$driverPatch)
+    if (!(Select-String -LiteralPath (Join-Path $artifactDir 'images.log') -Pattern 'realImageFormats' -Quiet)) { throw 'Packaged image conversion check failed' }
 }
 Invoke-AcceptanceDsh 'remove.log' @('plugin','--profile',$profileName,'remove','dsh-toolbox')
 Invoke-AcceptanceDsh 'removed-config.yml' @('--profile',$profileName,'--dump-config')
