@@ -110,6 +110,10 @@ impl CancelFlag {
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
+
+    pub(crate) fn as_atomic(&self) -> &AtomicBool {
+        &self.cancelled
+    }
 }
 
 #[derive(Debug)]
@@ -168,13 +172,26 @@ pub struct BridgeService {
     kernel: Option<AppKernel>,
     notes: Arc<StickyNoteModule>,
     gate: std::sync::Mutex<()>,
+    read_roots: Vec<PathBuf>,
+    write_roots: Vec<PathBuf>,
     #[cfg(test)]
     commit_barrier: Option<Arc<CommitBarrier>>,
 }
 
 impl BridgeService {
+    #[cfg(test)]
     pub fn open(data_dir: &Path) -> Result<Self, String> {
+        Self::open_with_roots(data_dir, &[], &[])
+    }
+
+    pub(crate) fn open_with_roots(
+        data_dir: &Path,
+        read_roots: &[PathBuf],
+        write_roots: &[PathBuf],
+    ) -> Result<Self, String> {
         let data_dir = prepare_directory(data_dir, "data directory")?;
+        let read_roots = canonicalize_roots(read_roots, "allow-read-root")?;
+        let write_roots = canonicalize_roots(write_roots, "allow-write-root")?;
         let notes = Arc::new(StickyNoteModule::new());
         let module: Arc<dyn AppModule> = notes.clone();
         let kernel = AppKernelBuilder::new(data_dir)
@@ -191,6 +208,8 @@ impl BridgeService {
             kernel: Some(kernel),
             notes,
             gate: std::sync::Mutex::new(()),
+            read_roots,
+            write_roots,
             #[cfg(test)]
             commit_barrier: None,
         })
@@ -222,6 +241,9 @@ impl BridgeService {
                 "notes.update".to_string(),
             ]);
         }
+        if self.image_conversion_available() {
+            capabilities.push("media.convert_image".to_string());
+        }
         capabilities.push("bridge.shutdown".to_string());
         capabilities
     }
@@ -235,10 +257,8 @@ impl BridgeService {
             "notes.create" => self.notes_create(params, cancel),
             "notes.search" => self.notes_search(params, cancel),
             "notes.update" => self.notes_update(params, cancel),
+            "media.convert_image" => self.convert_image(params, cancel),
             "bridge.shutdown" => self.shutdown(params, cancel),
-            "media.convert_image" => CallResult::Failure(BridgeFailure::unsupported(
-                "image conversion is not available in this bridge build",
-            )),
             _ => CallResult::Failure(BridgeFailure::unsupported("method is not supported")),
         }
     }
@@ -615,6 +635,79 @@ impl BridgeService {
     fn lock_gate(&self) -> std::sync::MutexGuard<'_, ()> {
         self.gate.lock().unwrap_or_else(|err| err.into_inner())
     }
+
+    fn image_conversion_available(&self) -> bool {
+        !self.read_roots.is_empty() && !self.write_roots.is_empty()
+    }
+
+    fn convert_image(&self, params: &Value, cancel: &CancelFlag) -> CallResult {
+        if !self.image_conversion_available() {
+            return CallResult::Failure(BridgeFailure::new(
+                "ACCESS_DENIED",
+                "image conversion has no authorized read and write roots",
+            ));
+        }
+        let map = match object(params) {
+            Ok(map) => map,
+            Err(err) => return CallResult::Failure(err),
+        };
+        if let Err(err) = reject_unknown(map, &["inputPath", "outputPath", "format"]) {
+            return CallResult::Failure(err);
+        }
+        let input = match required_string(map, "inputPath") {
+            Ok(input) => input,
+            Err(err) => return CallResult::Failure(err),
+        };
+        let output = match required_string(map, "outputPath") {
+            Ok(output) => output,
+            Err(err) => return CallResult::Failure(err),
+        };
+        let format_name = match required_string(map, "format") {
+            Ok(format) => format,
+            Err(err) => return CallResult::Failure(err),
+        };
+        let format = match parse_image_format(format_name) {
+            Ok(format) => format,
+            Err(err) => return CallResult::Failure(err),
+        };
+        let input_path = match resolve_authorized_input(input, &self.read_roots) {
+            Ok(path) => path,
+            Err(err) => return CallResult::Failure(err),
+        };
+        let output_path = match resolve_authorized_output(output, &self.write_roots) {
+            Ok(path) => path,
+            Err(err) => return CallResult::Failure(err),
+        };
+        self.checkpoint("before-commit", cancel);
+        if cancel.is_cancelled() {
+            return CallResult::Failure(BridgeFailure::cancelled());
+        }
+        let request = mod_media_proc::ExactImageRequest {
+            input_path,
+            output_path: output_path.clone(),
+            format,
+        };
+        match mod_media_proc::convert_image_exact_with(
+            &request,
+            cancel.as_atomic(),
+            &|| self.checkpoint("before-publish", cancel),
+            &|| self.checkpoint("after-commit", cancel),
+        ) {
+            Ok(mod_media_proc::ExactImageStatus::Completed) => {
+                let Some(output_path) = output_path.to_str() else {
+                    return CallResult::Failure(BridgeFailure::internal("image conversion failed"));
+                };
+                CallResult::Reply(json!({
+                    "outputPath": output_path,
+                    "format": format.as_str(),
+                }))
+            }
+            Ok(mod_media_proc::ExactImageStatus::Cancelled) => {
+                CallResult::Failure(BridgeFailure::cancelled())
+            }
+            Err(err) => CallResult::Failure(image_failure(&err)),
+        }
+    }
 }
 
 impl Drop for BridgeService {
@@ -637,6 +730,19 @@ fn module_status(service: &BridgeService, id: &str) -> Value {
             },
         });
     }
+    if id == "media_proc" {
+        let available = service.image_conversion_available();
+        return json!({
+            "id": id,
+            "available": available,
+            "enabled": available,
+            "reason": if available {
+                "Exact-path conversion is available for png, jpeg, webp, bmp, and ico. Capture and FFmpeg jobs are not started."
+            } else {
+                "Image conversion is not advertised until both a read root and a write root are configured. Capture and FFmpeg jobs are not started."
+            },
+        });
+    }
     json!({
         "id": id,
         "available": false,
@@ -647,7 +753,7 @@ fn module_status(service: &BridgeService, id: &str) -> Value {
 
 fn module_unavailable_reason(id: &str) -> &'static str {
     match id {
-        "media_proc" => "Not mounted. submit_image_jobs allocates its own output name and returns before conversion finishes, so an exact output path and cancel-before-completion are not available.",
+        "media_proc" => "Image conversion is not advertised until both a read root and a write root are configured. Capture and FFmpeg jobs are not started.",
         "clipboard" => "Not started. Clipboard capture is outside this bridge.",
         "app_usage" => "Not started. Usage tracking is outside this bridge.",
         "password_vault" => "Not started. The password vault and authentication are outside this bridge.",
@@ -779,6 +885,110 @@ fn reject_profile_path(path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn parse_image_format(value: &str) -> Result<mod_media_proc::ImageOutputFormat, BridgeFailure> {
+    use mod_media_proc::ImageOutputFormat::{Bmp, Ico, Jpeg, Png, Webp};
+    match value {
+        "png" => Ok(Png),
+        "jpeg" => Ok(Jpeg),
+        "webp" => Ok(Webp),
+        "bmp" => Ok(Bmp),
+        "ico" => Ok(Ico),
+        _ => Err(BridgeFailure::invalid("format is not supported")),
+    }
+}
+
+fn resolve_authorized_input(raw: &str, roots: &[PathBuf]) -> Result<PathBuf, BridgeFailure> {
+    let path = absolute_image_path(raw)?;
+    let canonical = match std::fs::canonicalize(&path) {
+        Ok(path) => strip_verbatim(&path),
+        Err(_) => {
+            return Err(BridgeFailure::new("NOT_FOUND", "input image was not found"));
+        }
+    };
+    if !roots.iter().any(|root| is_within(&canonical, root)) {
+        return Err(BridgeFailure::new(
+            "ACCESS_DENIED",
+            "input path is outside the authorized read roots",
+        ));
+    }
+    if !canonical.is_file() {
+        return Err(BridgeFailure::new("NOT_FOUND", "input image was not found"));
+    }
+    Ok(canonical)
+}
+
+fn resolve_authorized_output(raw: &str, roots: &[PathBuf]) -> Result<PathBuf, BridgeFailure> {
+    let path = absolute_image_path(raw)?;
+    let Some(name) = path.file_name() else {
+        return Err(BridgeFailure::invalid("output path is invalid"));
+    };
+    let name_text = name.to_string_lossy();
+    if name_text.is_empty()
+        || name_text == "."
+        || name_text == ".."
+        || name_text.contains(':')
+        || name_text.contains('\\')
+        || name_text.contains('/')
+    {
+        return Err(BridgeFailure::invalid("output path is invalid"));
+    }
+    let Some(parent) = path.parent() else {
+        return Err(BridgeFailure::invalid("output path is invalid"));
+    };
+    let parent = match std::fs::canonicalize(parent) {
+        Ok(path) => strip_verbatim(&path),
+        Err(_) => {
+            return Err(BridgeFailure::invalid("output directory is not available"));
+        }
+    };
+    if !roots.iter().any(|root| is_within(&parent, root)) {
+        return Err(BridgeFailure::new(
+            "ACCESS_DENIED",
+            "output path is outside the authorized write roots",
+        ));
+    }
+    let final_path = parent.join(name);
+    if std::fs::symlink_metadata(&final_path).is_ok() {
+        return Err(BridgeFailure::new("CONFLICT", "output already exists"));
+    }
+    Ok(final_path)
+}
+
+fn absolute_image_path(raw: &str) -> Result<PathBuf, BridgeFailure> {
+    let path = PathBuf::from(raw.trim());
+    if raw.trim().is_empty() || !path.is_absolute() {
+        return Err(BridgeFailure::invalid("image path must be absolute"));
+    }
+    Ok(path)
+}
+
+fn is_within(candidate: &Path, root: &Path) -> bool {
+    let candidate = path_key(candidate);
+    let root = path_key(root);
+    candidate == root || candidate.starts_with(&(root + "\\"))
+}
+
+fn path_key(path: &Path) -> String {
+    strip_verbatim(path)
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+fn image_failure(err: &CoreError) -> BridgeFailure {
+    let text = err.to_string();
+    if text.contains("already exists") {
+        BridgeFailure::new("CONFLICT", "output already exists")
+    } else if text.contains("not found") {
+        BridgeFailure::new("NOT_FOUND", "input image was not found")
+    } else if text.contains("could not be decoded") {
+        BridgeFailure::invalid("input image could not be decoded")
+    } else {
+        BridgeFailure::internal("image conversion failed")
+    }
 }
 
 fn strip_verbatim(path: &Path) -> PathBuf {
@@ -981,20 +1191,7 @@ mod tests {
     use serde_json::json;
 
     fn fixture(name: &str) -> PathBuf {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .unwrap()
-            .join(".tmp")
-            .join("dsh-bridge-tests")
-            .join(name);
-        let text = root.to_string_lossy().to_ascii_lowercase();
-        assert!(text.contains(".worktrees\\cursor") || text.contains(".worktrees/cursor"));
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir_all(&root).unwrap();
-        root
+        crate::test_fixture::scoped_fixture("dsh-bridge-tests", name)
     }
 
     fn call(service: &mut BridgeService, method: &str, params: Value) -> CallResult {
@@ -1061,7 +1258,7 @@ mod tests {
         ));
         assert!(matches!(
             call(&mut reopened, "media.convert_image", json!({})),
-            CallResult::Failure(BridgeFailure { code: "UNSUPPORTED", .. })
+            CallResult::Failure(BridgeFailure { code: "ACCESS_DENIED", .. })
         ));
         let caps = reopened.capabilities();
         assert!(caps.contains(&"status".to_string()));
@@ -1205,5 +1402,231 @@ mod tests {
             other => panic!("search failed: {other:?}"),
         };
         assert_eq!(after["total"], 0);
+    }
+
+    fn write_sample_png(path: &std::path::Path) {
+        let image = image::RgbImage::from_fn(8, 6, |x, y| {
+            image::Rgb([(x * 20) as u8, (y * 30) as u8, 90])
+        });
+        image.save(path).unwrap();
+    }
+
+    fn assert_converted(path: &std::path::Path, format: &str) {
+        let bytes = std::fs::read(path).unwrap();
+        match format {
+            "png" => assert!(bytes.starts_with(b"\x89PNG")),
+            "jpeg" => assert!(bytes.starts_with(&[0xFF, 0xD8, 0xFF])),
+            "webp" => {
+                assert!(bytes.starts_with(b"RIFF"));
+                assert_eq!(&bytes[8..12], b"WEBP");
+            }
+            "bmp" => assert!(bytes.starts_with(b"BM")),
+            "ico" => assert!(bytes.starts_with(&[0, 0, 1, 0])),
+            other => panic!("unexpected format {other}"),
+        }
+        let decoded = image::open(path).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (8, 6));
+    }
+
+    fn make_junction(link: &std::path::Path, target: &std::path::Path) {
+        let status = std::process::Command::new("cmd")
+            .args([
+                "/c",
+                "mklink",
+                "/J",
+                link.to_str().unwrap(),
+                target.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn image_conversion_checks_formats_roots_and_reparse_points() {
+        let dir = fixture("images");
+        let read = dir.join("read");
+        let write = dir.join("write");
+        let outside = dir.join("outside");
+        std::fs::create_dir_all(&read).unwrap();
+        std::fs::create_dir_all(&write).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let mut service =
+            BridgeService::open_with_roots(&dir, &[read.clone()], &[write.clone()]).unwrap();
+        assert!(service
+            .capabilities()
+            .iter()
+            .any(|cap| cap == "media.convert_image"));
+        let source = read.join("source.png");
+        write_sample_png(&source);
+        for (format, name) in [
+            ("png", "out.png"),
+            ("jpeg", "out.jpg"),
+            ("webp", "out.webp"),
+            ("bmp", "out.bmp"),
+            ("ico", "out.ico"),
+        ] {
+            let output = write.join(name);
+            let converted = match call(
+                &mut service,
+                "media.convert_image",
+                json!({
+                    "inputPath": source.display().to_string(),
+                    "outputPath": output.display().to_string(),
+                    "format": format
+                }),
+            ) {
+                CallResult::Reply(value) => value,
+                other => panic!("{format} conversion failed: {other:?}"),
+            };
+            assert_eq!(converted["format"], format);
+            assert_eq!(converted["outputPath"], output.display().to_string());
+            assert_converted(&output, format);
+        }
+        assert!(std::fs::read_dir(&write).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".dsh-")
+        }));
+
+        let bad = read.join("bad.png");
+        std::fs::write(&bad, b"not an image").unwrap();
+        let bad_out = write.join("bad-out.png");
+        assert!(matches!(
+            call(
+                &mut service,
+                "media.convert_image",
+                json!({
+                    "inputPath": bad.display().to_string(),
+                    "outputPath": bad_out.display().to_string(),
+                    "format": "png"
+                }),
+            ),
+            CallResult::Failure(BridgeFailure { code: "INVALID_REQUEST", .. })
+        ));
+        assert!(!bad_out.exists());
+
+        let existing = write.join("existing.png");
+        std::fs::write(&existing, b"keep-these-bytes").unwrap();
+        assert!(matches!(
+            call(
+                &mut service,
+                "media.convert_image",
+                json!({
+                    "inputPath": source.display().to_string(),
+                    "outputPath": existing.display().to_string(),
+                    "format": "png"
+                }),
+            ),
+            CallResult::Failure(BridgeFailure { code: "CONFLICT", .. })
+        ));
+        assert_eq!(std::fs::read(&existing).unwrap(), b"keep-these-bytes");
+
+        let outside_file = outside.join("secret.png");
+        write_sample_png(&outside_file);
+        let outside_bytes = std::fs::read(&outside_file).unwrap();
+        assert!(matches!(
+            call(
+                &mut service,
+                "media.convert_image",
+                json!({
+                    "inputPath": outside_file.display().to_string(),
+                    "outputPath": write.join("from-outside.png").display().to_string(),
+                    "format": "png"
+                }),
+            ),
+            CallResult::Failure(BridgeFailure { code: "ACCESS_DENIED", .. })
+        ));
+        assert_eq!(std::fs::read(&outside_file).unwrap(), outside_bytes);
+
+        let read_junction = read.join("via-junction");
+        make_junction(&read_junction, &outside);
+        assert!(matches!(
+            call(
+                &mut service,
+                "media.convert_image",
+                json!({
+                    "inputPath": read_junction.join("secret.png").display().to_string(),
+                    "outputPath": write.join("from-junction.png").display().to_string(),
+                    "format": "png"
+                }),
+            ),
+            CallResult::Failure(BridgeFailure { code: "ACCESS_DENIED", .. })
+        ));
+        assert_eq!(std::fs::read(&outside_file).unwrap(), outside_bytes);
+        assert!(!write.join("from-junction.png").exists());
+        std::fs::remove_dir(&read_junction).unwrap();
+
+        let write_junction = write.join("via-junction");
+        make_junction(&write_junction, &outside);
+        assert!(matches!(
+            call(
+                &mut service,
+                "media.convert_image",
+                json!({
+                    "inputPath": source.display().to_string(),
+                    "outputPath": write_junction.join("leak.png").display().to_string(),
+                    "format": "png"
+                }),
+            ),
+            CallResult::Failure(BridgeFailure { code: "ACCESS_DENIED", .. })
+        ));
+        assert!(!outside.join("leak.png").exists());
+        std::fs::remove_dir(&write_junction).unwrap();
+
+        let symlink = read.join("secret-link.png");
+        match std::os::windows::fs::symlink_file(&outside_file, &symlink) {
+            Ok(()) => {
+                assert!(matches!(
+                    call(
+                        &mut service,
+                        "media.convert_image",
+                        json!({
+                            "inputPath": symlink.display().to_string(),
+                            "outputPath": write.join("from-symlink.png").display().to_string(),
+                            "format": "png"
+                        }),
+                    ),
+                    CallResult::Failure(BridgeFailure { code: "ACCESS_DENIED", .. })
+                ));
+                assert_eq!(std::fs::read(&outside_file).unwrap(), outside_bytes);
+                assert!(!write.join("from-symlink.png").exists());
+                std::fs::remove_file(&symlink).unwrap();
+            }
+            Err(error) => {
+                assert_eq!(
+                    error.raw_os_error(),
+                    Some(1314),
+                    "symlink creation failed unexpectedly: {error}"
+                );
+            }
+        }
+
+        assert!(matches!(
+            call(
+                &mut service,
+                "media.convert_image",
+                json!({
+                    "inputPath": "relative.png",
+                    "outputPath": write.join("relative-out.png").display().to_string(),
+                    "format": "png"
+                }),
+            ),
+            CallResult::Failure(BridgeFailure { code: "INVALID_REQUEST", .. })
+        ));
+        assert!(matches!(
+            call(
+                &mut service,
+                "media.convert_image",
+                json!({
+                    "inputPath": source.display().to_string(),
+                    "outputPath": write.join("nope.png").display().to_string(),
+                    "format": "gif"
+                }),
+            ),
+            CallResult::Failure(BridgeFailure { code: "INVALID_REQUEST", .. })
+        ));
     }
 }

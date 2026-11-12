@@ -1362,6 +1362,8 @@ name = "dsh-bridge"
 version = "0.1.3-beta"
 dependencies = [
  "app-core",
+ "image",
+ "mod-media-proc",
  "mod-sticky-note",
  "rusqlite",
  "serde",
