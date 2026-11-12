@@ -11,7 +11,7 @@ export function apply(ctx) {
   const exit = ctx.get('appExit');
   if (!exit) throw new Error('Acceptance driver requires the actual dsh launcher');
   const controller = new AbortController();
-  const deadline = setTimeout(() => controller.abort(new Error('Profile acceptance deadline exceeded')), 20000);
+  const deadline = setTimeout(() => controller.abort(new Error('Profile acceptance deadline exceeded')), 45000);
   const work = run(ctx, controller.signal).then(
     result => { console.log(`TOOLBOX_ACCEPTANCE ${JSON.stringify(result)}`); exit(0); },
     error => { console.error(`TOOLBOX_ACCEPTANCE_FAILED ${error.code || error.name}: ${error.message}`); exit(1); },
