@@ -82,6 +82,7 @@ export class NativeOwner {
       if (exited) throw hostError('NATIVE_START_FAILED', 'The native process exited before it became ready; check data lock and native configuration');
       try {
         this.bridge = await connectBridge({ pipePath: this.pipePath, instanceId: this.instanceId, signal: this.startup.signal, timeoutMs: Math.max(1, Math.min(500, deadline - Date.now())), cancelTimeoutMs: config.cancelTimeoutMs });
+        if (exited || this.bridge.isClosed) throw hostError('NATIVE_START_FAILED', 'The native process exited during startup');
         this.ready = true;
         return this;
       } catch (error) {
