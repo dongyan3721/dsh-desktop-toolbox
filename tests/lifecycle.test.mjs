@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
 import { createToolboxContext } from '../scripts/test-context.mjs';
 
 test('20 real Loader load/unload cycles release registrations, process ranges and the same data lock', { timeout: 60000 }, async () => {
@@ -32,5 +33,5 @@ test('a conflicting instance fails startup without interrupting the existing plu
 test('invalid lifecycle configuration and missing executable fail loading without tools', { timeout: 15000 }, async () => {
   await assert.rejects(createToolboxContext({ config: { dataDir: 'relative' } }), { code: 'INVALID_CONFIG' });
   await assert.rejects(createToolboxContext({ config: { startupTimeoutMs: 0 } }), { code: 'INVALID_CONFIG' });
-  await assert.rejects(createToolboxContext({ config: { nativeExecutable: 'D:/Code/dsh-toolbox/.worktrees/integration/.tmp/missing-native.exe' } }), /not an executable/);
+  await assert.rejects(createToolboxContext({ config: { nativeExecutable: fileURLToPath(new URL('../.tmp/missing-native.exe', import.meta.url)) } }), /not an executable/);
 });

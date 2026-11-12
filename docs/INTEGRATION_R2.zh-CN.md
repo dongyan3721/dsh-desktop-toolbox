@@ -2,6 +2,8 @@
 
 日期：2026-11-13。实现与验收工作树：`D:\Code\dsh-toolbox\.worktrees\integration`，分支 `integration/notes-mvp`。本轮是便笺与图片 MVP 的本机验收，不是十个模块的全部迁移，也没有向 npm 或日常 Harness Profile 发布。
 
+集成已通过门槛并以 `9df82bc` 快进合并 main。最终 tgz、SHA-256 文件和运行资源已同步到主目录；主目录再次构建 ESM、复跑 92 项测试通过，并以全新 DSH_HOME 完成相同的升级/图片/卸载验收。最终主目录日志位于 `artifacts/package-acceptance/532efcd0-8120-4b48-b47d-d31e6b7404bc/`，结束后本轮原生进程检查无残留。三个原交付分支和工作树保留。
+
 ## 交付与分工
 
 三位本机 agent 使用独立工作树，Codex 审查、修正、集成、测试与打包。原始交付分支和工作树保留，没有让他们共同修改 main。
@@ -84,5 +86,7 @@ node --test tests/*.test.mjs packages/dsh-toolbox/tests/*.test.mjs
 ## 使用边界与后续
 
 当前是 Windows x64 本机 alpha。图片输出文件系统必须支持硬链接；路径解析可识别 junction/symlink，但不对抗同用户在检查后恶意替换目录。只配置可信根目录。旧应用数据尚未导入，其余八个模块未接入；外部发布前仍需第三方许可清单、额外系统运行库与更多系统兼容性验收。
+
+正常失败和合作取消的 staging 清理已测试；崩溃或强制终止后的 staging 自动扫描恢复尚未实现，未承诺此时没有临时文件遗留。
 
 本轮 SDK 提取脚本曾将一份开发 SDK 副本写到 `D:\Code\vendor`。路径计算已修正，实际构建使用项目内副本。迁回并清理误放副本的操作被自动审批拒绝，返回 `blocked by policy`，没有执行；该额外副本目前保留，不参与构建或发布包。

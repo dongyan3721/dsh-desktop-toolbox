@@ -15,3 +15,5 @@ B. 在原 mod-media-proc 提供最小公开的可等待图片转换入口，复�
 测至少 png/jpeg/webp/bmp/ico 中宣称支持的全部格式、坏输入、已有输出保持原字节、越界/链接路径、取消前/转换中/发布后及临时文件清理。使用D盘生成夹具，不读用户媒体或启动采集。若 Win32/文件系统边界无法可靠落实，保留 UNSUPPORTED 并明确阻碍，不弱化协议。
 
 加载自己工作树环境并继续使用 build/rust/cursor/{target,intermediates}；运行有针对性的 cargo test --locked --offline 及 release build。若缺离线依赖可从网络下载到既有D盘Cargo缓存，勿改全局环境。交付 commit、真实测试结果、release路径/哈希、限制。现在执行。
+
+实施期间追加：Codex 在本机对话中授权扩展到 `mod-sticky-note/src/lib.rs` 及其测试，修正便笺创建/关闭、正文/冲突令牌双次提交的崩溃窗口。以 `f38936b` 交付最小 headless 事务 API 与桥适配，保留原桌面 API 行为；11 项模块回归通过。另按集成反馈以 `549ea07` 修正入站通道背压和 reader 停稳。最终集成与包验收由 Codex 完成，见 `docs/INTEGRATION_R2.zh-CN.md`。
