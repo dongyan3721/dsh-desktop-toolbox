@@ -8,7 +8,8 @@
 
 - `38fb766` 取消只在提交前返回 `CANCELLED`，提交后返回成功；关停和父进程退出会等正在执行的写入结束。队列 16，未匹配取消 id 32。
 - `549ea07` reader 到 session 的通道容量是 1。同一次读出的 request 和 cancel 仍在同一批里交给 session。session 退出时 abort 并 await 自己启动的 reader。响应写被堵住时，父进程 watch 关闭会打断这次写入，不再等管道自己掉线。
-- 本交接和图片转换在同一提交，父提交是 `549ea07`。
+- `5461a40` 精确路径图片转换。只有读根和写根都配置时才广告 `media.convert_image`。
+- 便笺原子存储是 `5461a40` 之后的下一笔提交。
 
 ## 图片转换
 
@@ -38,7 +39,9 @@ Release 二进制：
 
 `D:\Code\dsh-toolbox\.worktrees\cursor\build\rust\cursor\target\release\dsh-toolbox-native.exe`
 
-SHA256：`44D813E0DD13EB30040B40691926BB81531F787F27982D309F30BF9538AD40DD`
+当前 release（含便笺原子存储）SHA256：`E2F21AEBF8836BAA00B73AC6B886A4B37EEC895DA67DD1C11CE6805E2E528D72`
+
+图片提交 `5461a40` 当时的 release SHA256：`44D813E0DD13EB30040B40691926BB81531F787F27982D309F30BF9538AD40DD`
 
 这次 release 构建没有 `dsh-bridge` 警告。测试夹具从 `CARGO_MANIFEST_DIR` 向上找到同时含 `AGENTS.md` 和 `native/` 的项目根，再用该根下的 `.tmp`。递归删除前会确认路径是 `.tmp` 的子目录。不依赖 `.worktrees/cursor`。
 
@@ -50,6 +53,8 @@ SHA256：`44D813E0DD13EB30040B40691926BB81531F787F27982D309F30BF9538AD40DD`
 
 `cargo test -p mod-media-proc --offline --locked`：库测试 6 通过，其中 `exact_conversion_uses_real_codecs_and_settles_cancellation` 覆盖五种格式和取消落定。`lifecycle` 1 通过。`real_ffmpeg` 里已安装 FFmpeg 的那项通过；需要 `ALL_IN_ONE_QA_MEDIA_INPUT` 的项是 ignored。桥本身没有启动采集。
 
+`cargo test -p mod-sticky-note --offline --locked`：11 通过。原来的 10 项桌面回归仍在，新增的一项覆盖创建回滚、更新回滚、同一毫秒和时钟落后时令牌加 1，以及过期令牌不改正文。
+
 没有读用户媒体，没有做桌面窗口或剪贴板测试。创建文件符号链接若返回 Win32 1314（没有创建符号链接的特权），该项测试接受这个结果，junction 用例仍然执行。
 
 ## 限制
@@ -58,4 +63,4 @@ canonicalize 之后再打开，同一用户仍有 TOCTOU。这不是对抗同用
 
 `TIMEOUT` 仍未使用。信封 `deny_unknown_fields` 不变。父进程 PID 复用和带 `SeTakeOwnershipPrivilege` 的管理员绕过 DACL，这两项没有扩大处理。
 
-便笺创建仍是先 `is_open = 1` 的 INSERT 再 close UPDATE。更新仍是 `save_content` 提交后再做第二次 SQL 推进冲突令牌。同一次提交前崩溃，可能留下打开标记，或留下正文已变但令牌没前进。这是下一项独立修正，不在本提交里。
+便笺的原子存储在图片提交之后单独修正。`create_closed_note` 在一次事务里 INSERT `is_open = 0`，不调用 `spawn_note_window`。`save_closed_content` 在同一次事务里写标题/正文、单调且不超过 JS 安全整数的 `updated_at`，并用 `expected_updated_at` 做 CAS。时钟不比旧令牌新（同一毫秒、时钟倒退，或库里的令牌已经在墙钟前面）时，新令牌是旧值加 1，不会把令牌改小。期望令牌不匹配时返回冲突，正文和令牌都不变。`create_closed_note_checking` / `save_closed_content_checking` 让测试在 COMMIT 前失败；事务回滚，不会留下半次写入。桌面的 `create_note`、`save_content`、窗口序号和关闭刷新没有改。桥的 `notes.create` / `notes.update` 改走这两个 headless 函数，不再 `create` 后再 `close`，也不再在桥里执行第二条修正令牌的 SQL。这条 headless 路径不看桌面写入会话游标。
