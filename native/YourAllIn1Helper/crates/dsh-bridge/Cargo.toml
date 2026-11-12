@@ -1,0 +1,29 @@
+[package]
+name = "dsh-bridge"
+description = "Headless Windows named-pipe bridge for status and sticky-note persistence."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "dsh-toolbox-native"
+path = "src/main.rs"
+
+[dependencies]
+app-core = { path = "../app-core" }
+mod-sticky-note = { path = "../mod-sticky-note" }
+rusqlite.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util", "net"] }
+uuid.workspace = true
+windows-sys = { version = "0.52", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+] }
