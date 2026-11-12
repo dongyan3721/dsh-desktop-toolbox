@@ -1,6 +1,6 @@
 {
   "name": "dsh-toolbox",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Native notes and image toolbox for DeepSeek Harness",
   "type": "module",
   "os": ["win32"],

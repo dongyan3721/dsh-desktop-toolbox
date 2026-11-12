@@ -8,19 +8,29 @@
 - [交付后的下一步计划](docs/NEXT_PHASE_PLAN.zh-CN.md)：第一轮交付复核、已确认缺口、联调及发布门槛。
 - [插件开发指南快照](docs/references/deepseek-harness-plugin-dev-guide/README.md)：按固定 commit 保存，来源见勘察基线。
 
-已准备可运行的 `toolbox_status` 插件样例，复用了本机 Harness `0.2.2-rc.1` 的实际 SDK。原生源码已按固定基线导出到 `native/YourAllIn1Helper`；原 C 盘项目保持只读。源码、构建中间文件、测试数据和发布包均在本工作区中生成，共享缓存和工具链复用 D 盘目录。
+插件使用本机 Harness `0.2.2-rc.1` 的实际 SDK，通过受管理的 Windows 原生进程提供便笺存储。图片工具在显式配置允许的读写根且原生实际支持时开放。原生源码按固定基线导出到 `native/YourAllIn1Helper`；原 C 盘项目保持只读。构建中间文件、测试数据和发布包均在本工作区中生成，共享缓存和工具链复用 D 盘目录。
 
 在本工作区 PowerShell 中运行：
 
 ```powershell
 . ./scripts/Use-ProjectEnvironment.ps1
 node ./scripts/build.mjs
-node --test ./tests/prototype.test.mjs
+./scripts/Build-Package.ps1
+node --test tests/*.test.mjs packages/dsh-toolbox/tests/*.test.mjs
 node ./scripts/demo.mjs
 ```
 
-本机 SDK 快照在 `vendor/harness-runtime`，根 node_modules 是指向它的 D 盘 junction。需要重建时，在上述环境中使用已安装的 Electron Node 模式执行 `scripts/inspect-harness-runtime.cjs --reference --extract-sdk`；安装位置目前为 `E:\deepseek-harness`，不会写入该安装目录。
+本机 SDK 快照在 `vendor/harness-runtime`，根 node_modules 是指向它的 D 盘 junction。初始提取使用已安装的 Electron Node 模式执行 `scripts/inspect-harness-runtime.cjs --reference --extract-sdk`，追加进程/文件系统依赖使用 `scripts/extract-process-sdk.cjs`；安装位置目前为 `E:\deepseek-harness`，仅作只读输入。提取脚本属于开发准备，不随插件包发布。
 
-样例包：`dist/dsh-toolbox-0.0.1-prototype.1.tgz`，已安装在工作区的 `runtime/dsh-dev/profiles/toolbox-prototype` 并完成配置审计。第二项 prototype 测试要求该隔离 Profile 中的样例包已安装。样例只报告迁移状态，不执行原生桌面操作。
+`Build-Package.ps1` 从当前工作树构建原生 release、生成版本/哈希清单、构建 ESM，并将 tarball 放入 `dist`。不把 SDK、工作树或测试数据库装进包，不执行安装期编译。需要本机已准备的 Rust/MSVC、Node 与 pnpm；发布物运行无需 Rust 或原 C 盘项目。
 
-第一轮并行工作：Cursor 实现原生桥，Antigravity 实现 Node 客户端，Zed 实现便笺与图片工具。任务边界与接口见 [实施基线](docs/IMPLEMENTATION_BASELINE.zh-CN.md)、[桥协议](docs/BRIDGE_PROTOCOL.md) 及 `docs/tasks/`。三个 agent 的代码需经过 Codex 审查与联调后，才注册到插件入口。
+从发布包做隔离验收（生成的便笺与图片保留在 `runtime`，日志在 `artifacts`）：
+
+```powershell
+./scripts/Test-PackagedPlugin.ps1 -Package ./dist/dsh-toolbox-0.1.0-alpha.2.tgz -Images
+# 可附加 -PreviousPackage ./dist/dsh-toolbox-0.1.0-alpha.1.tgz 验证升级保留数据。
+```
+
+验收脚本启动真实 CLI/Profile，不调用模型 API；检查便笺创建/查询/更新、重启持久化、配置重载、图片实际格式和卸载配置。Windows x64 是本轮运行目标，外部发布前仍需完整许可和额外系统兼容性审计。日常用户 Profile 不在本轮安装范围内。
+
+三位本机 agent 使用独立工作树：Cursor 实现原生桥，Antigravity 实现 Node 客户端，Zed 实现工具工厂。Codex 在 `.worktrees/integration` 集成并执行真实测试，通过门槛后合并 main。边界与接口见 [实施基线](docs/IMPLEMENTATION_BASELINE.zh-CN.md)、[桥协议](docs/BRIDGE_PROTOCOL.md) 及 `docs/tasks/`。
