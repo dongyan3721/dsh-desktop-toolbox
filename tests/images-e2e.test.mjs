@@ -26,6 +26,11 @@ test('real Loader image tool converts all five formats and enforces file boundar
       assert.equal(converted.value.format, format);
       assert.deepEqual(imageDimensions(await readFile(outputPath), format), [2, 2]);
     }
+    const unicodeOutput = join(outputs, 'trailing.png\u00a0');
+    const unicode = await harness.call('toolbox_image_convert', { inputPath: source, outputPath: unicodeOutput, format: 'png' });
+    assert.equal(unicode.isError, false, unicode.error?.message);
+    assert.equal(unicode.value.outputPath.toLowerCase(), unicodeOutput.toLowerCase());
+    assert.deepEqual(imageDimensions(await readFile(unicodeOutput), 'png'), [2, 2]);
     const existing = join(outputs, 'existing.png');
     await writeFile(existing, 'keep-original');
     assert.equal((await harness.call('toolbox_image_convert', { inputPath: source, outputPath: existing, format: 'png' })).isError, true);
@@ -38,6 +43,6 @@ test('real Loader image tool converts all five formats and enforces file boundar
     const badOutput = join(outputs, 'bad.png');
     assert.equal((await harness.call('toolbox_image_convert', { inputPath: bad, outputPath: badOutput, format: 'png' })).isError, true);
     await assert.rejects(access(badOutput));
-    assert.deepEqual((await readdir(outputs)).sort(), ['converted.bmp', 'converted.ico', 'converted.jpeg', 'converted.png', 'converted.webp', 'existing.png']);
+    assert.deepEqual((await readdir(outputs)).sort(), ['converted.bmp', 'converted.ico', 'converted.jpeg', 'converted.png', 'converted.webp', 'existing.png', 'trailing.png\u00a0']);
   } finally { await harness.close(); }
 });

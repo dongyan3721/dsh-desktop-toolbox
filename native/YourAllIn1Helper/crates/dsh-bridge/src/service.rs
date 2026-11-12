@@ -870,6 +870,8 @@ fn resolve_authorized_output(raw: &str, roots: &[PathBuf]) -> Result<PathBuf, Br
         || name_text.contains(':')
         || name_text.contains('\\')
         || name_text.contains('/')
+        || name_text.ends_with(' ')
+        || name_text.ends_with('.')
     {
         return Err(BridgeFailure::invalid("output path is invalid"));
     }
@@ -896,7 +898,7 @@ fn resolve_authorized_output(raw: &str, roots: &[PathBuf]) -> Result<PathBuf, Br
 }
 
 fn absolute_image_path(raw: &str) -> Result<PathBuf, BridgeFailure> {
-    let path = PathBuf::from(raw.trim());
+    let path = PathBuf::from(raw);
     if raw.trim().is_empty() || !path.is_absolute() {
         return Err(BridgeFailure::invalid("image path must be absolute"));
     }
