@@ -17,6 +17,16 @@ pub fn process(
     partial: &Path,
     cancelled: &AtomicBool,
 ) -> CoreResult<()> {
+    process_with_hook(job, options, partial, cancelled, &|| {})
+}
+
+pub(crate) fn process_with_hook(
+    job: &MediaJob,
+    options: &ImageConvertOptions,
+    partial: &Path,
+    cancelled: &AtomicBool,
+    before_publish: &dyn Fn(),
+) -> CoreResult<()> {
     check_cancelled(cancelled)?;
     options.validate()?;
     let decoded = image::open(&job.input_path).map_err(|error| {
@@ -76,6 +86,8 @@ pub fn process(
         }
     }
     writer.flush()?;
+    drop(writer);
+    before_publish();
     check_cancelled(cancelled)?;
     let output = job
         .output_path

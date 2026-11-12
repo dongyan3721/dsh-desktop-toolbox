@@ -9,29 +9,57 @@ use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeClient};
 
-fn worktree_root() -> PathBuf {
+fn project_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
-        .nth(4)
-        .expect("worktree")
+        .find(|dir| dir.join("AGENTS.md").is_file() && dir.join("native").is_dir())
+        .expect("CARGO_MANIFEST_DIR is not inside the toolbox project")
         .to_path_buf()
 }
 
 fn fixture(name: &str) -> PathBuf {
-    let root = worktree_root()
-        .join(".tmp")
-        .join("dsh-bridge-tests")
-        .join(name);
-    let text = root.to_string_lossy().to_ascii_lowercase();
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let tmp = project_root().join(".tmp");
+    let root = tmp.join("dsh-bridge-tests").join(format!(
+        "{name}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
     assert!(
-        text.contains(".worktrees\\cursor") || text.contains(".worktrees/cursor"),
-        "fixture escaped the cursor worktree: {text}"
+        fixture_is_inside_tmp(&root, &tmp),
+        "refusing to delete {} because it is outside {}",
+        root.display(),
+        tmp.display()
     );
     if root.exists() {
         std::fs::remove_dir_all(&root).unwrap();
     }
     std::fs::create_dir_all(&root).unwrap();
     root
+}
+
+fn fixture_is_inside_tmp(path: &std::path::Path, tmp: &std::path::Path) -> bool {
+    fn key(path: &std::path::Path) -> String {
+        let mut normalized = PathBuf::new();
+        for component in path.components() {
+            match component {
+                std::path::Component::ParentDir => {
+                    normalized.pop();
+                }
+                std::path::Component::CurDir => {}
+                other => normalized.push(other),
+            }
+        }
+        normalized
+            .to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_ascii_lowercase()
+    }
+    let path = key(path);
+    let tmp = key(tmp);
+    !tmp.is_empty() && path.starts_with(&(tmp + "\\"))
 }
 
 struct Running {
@@ -42,7 +70,7 @@ struct Running {
 impl Running {
     fn spawn(data_dir: &std::path::Path, instance_id: &str, parent_pid: u32) -> Self {
         let pipe = format!(r"\\.\pipe\dsh-toolbox-{instance_id}");
-        let temp = worktree_root().join(".tmp");
+        let temp = project_root().join(".tmp");
         let mut command = Command::new(env!("CARGO_BIN_EXE_dsh-toolbox-native"));
         command
             .args([

@@ -8,6 +8,8 @@
 mod protocol;
 mod service;
 mod session;
+#[cfg(test)]
+mod test_fixture;
 mod winutil;
 
 pub use service::run_from_env;

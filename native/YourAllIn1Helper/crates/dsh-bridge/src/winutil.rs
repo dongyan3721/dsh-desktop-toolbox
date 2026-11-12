@@ -90,7 +90,12 @@ pub async fn serve(config: BridgeConfig) -> Result<(), String> {
     let mut parent_exit = watch_parent(config.parent_pid)?;
     let _lock = InstanceLock::acquire(&config.data_dir)?;
     let service = std::sync::Arc::new(tokio::sync::Mutex::new(
-        BridgeService::open(&config.data_dir).map_err(|err| err)?,
+        BridgeService::open_with_roots(
+            &config.data_dir,
+            &config.allow_read_roots,
+            &config.allow_write_roots,
+        )
+        .map_err(|err| err)?,
     ));
     eprintln!(
         "dsh-toolbox-native: listening for instance {}",
@@ -317,25 +322,9 @@ unsafe fn acl_allows_only_current_user(dacl: *mut ACL) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     fn fixture(name: &str) -> std::path::PathBuf {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .unwrap()
-            .join(".tmp")
-            .join("dsh-bridge-tests")
-            .join(format!(
-                "{name}-{}",
-                COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-        if root.exists() {
-            let _ = std::fs::remove_dir_all(&root);
-        }
-        std::fs::create_dir_all(&root).unwrap();
-        root
+        crate::test_fixture::scoped_fixture("dsh-bridge-tests", name)
     }
 
     #[test]

@@ -27,11 +27,15 @@ const MAX_UNMATCHED_CANCELS: usize = 32;
 /// Decoded batches waiting in the reader→session channel.
 const MAX_INBOUND_BATCHES: usize = 1;
 /// The channel slot plus the batch the reader holds while `send` waits.
+#[cfg(test)]
 const MAX_IN_FLIGHT_BATCHES: usize = MAX_INBOUND_BATCHES + 1;
 /// Smallest legal frame is a 4-byte length and one payload byte.
+#[cfg(test)]
 const MIN_FRAME_BYTES: usize = 4 + 1;
 /// One batch is the frames completed by a single read: one leftover frame plus the frames in that chunk.
+#[cfg(test)]
 const MAX_FRAMES_PER_BATCH: usize = 1 + READ_CHUNK / MIN_FRAME_BYTES;
+#[cfg(test)]
 const MAX_IN_FLIGHT_MESSAGES: usize = MAX_IN_FLIGHT_BATCHES * MAX_FRAMES_PER_BATCH;
 
 struct InboundMeter {
@@ -42,6 +46,7 @@ struct InboundMeter {
 }
 
 impl InboundMeter {
+    #[cfg(test)]
     fn new() -> Arc<Self> {
         Arc::new(Self {
             batches: AtomicUsize::new(0),
@@ -756,18 +761,7 @@ mod tests {
     use tokio::io::duplex;
 
     fn fixture(name: &str) -> std::path::PathBuf {
-        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .ancestors()
-            .nth(4)
-            .unwrap()
-            .join(".tmp")
-            .join("dsh-bridge-tests")
-            .join(name);
-        if root.exists() {
-            std::fs::remove_dir_all(&root).unwrap();
-        }
-        std::fs::create_dir_all(&root).unwrap();
-        root
+        crate::test_fixture::scoped_fixture("dsh-bridge-tests", name)
     }
 
     async fn read_frame(reader: &mut (impl AsyncRead + Unpin)) -> serde_json::Value {
@@ -848,9 +842,26 @@ mod tests {
     }
 
     async fn start_session(name: &str) -> SessionFixture {
+        start_session_inner(name, false).await
+    }
+
+    async fn start_rooted_session(name: &str) -> SessionFixture {
+        start_session_inner(name, true).await
+    }
+
+    async fn start_session_inner(name: &str, rooted: bool) -> SessionFixture {
         let dir = fixture(name);
         let barrier = std::sync::Arc::new(crate::service::CommitBarrier::new());
-        let service = std::sync::Arc::new(Mutex::new(BridgeService::open(&dir).unwrap()));
+        let opened = if rooted {
+            let read = dir.join("read");
+            let write = dir.join("write");
+            std::fs::create_dir_all(&read).unwrap();
+            std::fs::create_dir_all(&write).unwrap();
+            BridgeService::open_with_roots(&dir, &[read], &[write]).unwrap()
+        } else {
+            BridgeService::open(&dir).unwrap()
+        };
+        let service = std::sync::Arc::new(Mutex::new(opened));
         service
             .try_lock()
             .expect("service lock")
@@ -875,6 +886,12 @@ mod tests {
             .unwrap();
         let ready = read_frame(&mut client_read).await;
         assert_eq!(ready["type"], "ready");
+        let advertises_image = ready["capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|cap| cap == "media.convert_image");
+        assert_eq!(advertises_image, rooted);
         SessionFixture {
             dir,
             service,
@@ -1184,6 +1201,118 @@ mod tests {
             .unwrap();
         assert_eq!(drained, 1);
         assert_eq!(late, 0);
+    }
+
+    fn staging_names(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+                name.starts_with(".dsh-").then_some(name)
+            })
+            .collect()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn image_cancel_settles_around_publication() {
+        let mut session = start_rooted_session("image-cancel").await;
+        let source = session.dir.join("read").join("source.png");
+        let image = image::RgbImage::from_fn(4, 4, |x, y| {
+            image::Rgb([(x * 40) as u8, (y * 40) as u8, 10])
+        });
+        image.save(&source).unwrap();
+        let write = session.dir.join("write");
+
+        session.barrier.arm("before-commit");
+        let early = write.join("early.png");
+        session
+            .client_write
+            .write_all(&request(
+                "early",
+                "media.convert_image",
+                json!({
+                    "inputPath": source.display().to_string(),
+                    "outputPath": early.display().to_string(),
+                    "format": "png"
+                }),
+            ))
+            .await
+            .unwrap();
+        let flag = wait_stage(&session.barrier, "before-commit").await;
+        session
+            .client_write
+            .write_all(&encode_json(&json!({"v": 1, "type": "cancel", "id": "early"})).unwrap())
+            .await
+            .unwrap();
+        wait_until_cancelled(&flag).await;
+        session.barrier.release();
+        let early_response = read_frame(&mut session.client_read).await;
+        assert_eq!(early_response["error"]["code"], "CANCELLED");
+        assert!(!early.exists());
+        assert!(staging_names(&write).is_empty());
+
+        session.barrier.arm("before-publish");
+        let during = write.join("during.png");
+        session
+            .client_write
+            .write_all(&request(
+                "during",
+                "media.convert_image",
+                json!({
+                    "inputPath": source.display().to_string(),
+                    "outputPath": during.display().to_string(),
+                    "format": "png"
+                }),
+            ))
+            .await
+            .unwrap();
+        let flag = wait_stage(&session.barrier, "before-publish").await;
+        assert!(!during.exists());
+        assert!(!staging_names(&write).is_empty());
+        session
+            .client_write
+            .write_all(&encode_json(&json!({"v": 1, "type": "cancel", "id": "during"})).unwrap())
+            .await
+            .unwrap();
+        wait_until_cancelled(&flag).await;
+        session.barrier.release();
+        let during_response = read_frame(&mut session.client_read).await;
+        assert_eq!(during_response["error"]["code"], "CANCELLED");
+        assert!(!during.exists());
+        assert!(staging_names(&write).is_empty());
+
+        session.barrier.arm("after-commit");
+        let done = write.join("done.png");
+        session
+            .client_write
+            .write_all(&request(
+                "done",
+                "media.convert_image",
+                json!({
+                    "inputPath": source.display().to_string(),
+                    "outputPath": done.display().to_string(),
+                    "format": "png"
+                }),
+            ))
+            .await
+            .unwrap();
+        let flag = wait_stage(&session.barrier, "after-commit").await;
+        assert!(done.exists());
+        assert!(std::fs::read(&done).unwrap().starts_with(b"\x89PNG"));
+        session
+            .client_write
+            .write_all(&encode_json(&json!({"v": 1, "type": "cancel", "id": "done"})).unwrap())
+            .await
+            .unwrap();
+        wait_until_cancelled(&flag).await;
+        session.barrier.release();
+        let done_response = read_frame(&mut session.client_read).await;
+        assert_eq!(done_response["ok"], true);
+        assert_eq!(done_response["result"]["format"], "png");
+        assert!(std::fs::read(&done).unwrap().starts_with(b"\x89PNG"));
+        assert!(staging_names(&write).is_empty());
+        drop(session.parent_tx);
+        let _ = session.server_task.await;
     }
 
     #[tokio::test(flavor = "current_thread")]
