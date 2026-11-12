@@ -16,6 +16,80 @@ const MAX_QUERY_CHARS: usize = 200;
 const MAX_ID_CHARS: usize = 80;
 const MAX_SEARCH_LIMIT: u64 = 20;
 const MAX_SEARCH_OFFSET: u64 = 10_000;
+const DEFAULT_SEARCH_LIMIT: u64 = 20;
+const DEFAULT_SEARCH_OFFSET: u64 = 0;
+/// JavaScript `Number.MAX_SAFE_INTEGER`. Note tokens and other integers crossing the bridge stay inside it.
+const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
+/// Test hook that pauses a mutating call at one commit stage.
+///
+/// `before-commit` is immediately before the cancellation sample and the database write.
+/// `after-commit` is after the write and the conflict token are durable.
+#[cfg(test)]
+#[derive(Clone)]
+pub(crate) struct CommitBarrier {
+    armed: Arc<std::sync::Mutex<Option<&'static str>>>,
+    release: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+    stage_tx: tokio::sync::watch::Sender<Option<&'static str>>,
+    flag_tx: tokio::sync::watch::Sender<Option<CancelFlag>>,
+    _stage_rx: tokio::sync::watch::Receiver<Option<&'static str>>,
+    _flag_rx: tokio::sync::watch::Receiver<Option<CancelFlag>>,
+}
+
+#[cfg(test)]
+impl CommitBarrier {
+    pub(crate) fn new() -> Self {
+        let (stage_tx, stage_rx) = tokio::sync::watch::channel(None);
+        let (flag_tx, flag_rx) = tokio::sync::watch::channel(None);
+        Self {
+            armed: Arc::new(std::sync::Mutex::new(None)),
+            release: Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
+            stage_tx,
+            flag_tx,
+            _stage_rx: stage_rx,
+            _flag_rx: flag_rx,
+        }
+    }
+
+    pub(crate) fn arm(&self, stage: &'static str) {
+        *self.armed.lock().unwrap_or_else(|err| err.into_inner()) = Some(stage);
+    }
+
+    pub(crate) fn stage(&self) -> tokio::sync::watch::Receiver<Option<&'static str>> {
+        self.stage_tx.subscribe()
+    }
+
+    pub(crate) fn flag(&self) -> tokio::sync::watch::Receiver<Option<CancelFlag>> {
+        self.flag_tx.subscribe()
+    }
+
+    pub(crate) fn release(&self) {
+        let (lock, condvar) = &*self.release;
+        let mut released = lock.lock().unwrap_or_else(|err| err.into_inner());
+        *released = true;
+        condvar.notify_all();
+    }
+
+    fn checkpoint(&self, stage: &'static str, cancel: &CancelFlag) {
+        if stage == "before-commit" {
+            self.flag_tx.send_replace(Some(cancel.clone()));
+        }
+        let mut armed = self.armed.lock().unwrap_or_else(|err| err.into_inner());
+        if *armed != Some(stage) {
+            return;
+        }
+        *armed = None;
+        drop(armed);
+        self.stage_tx.send_replace(Some(stage));
+        let (lock, condvar) = &*self.release;
+        let mut released = lock.lock().unwrap_or_else(|err| err.into_inner());
+        while !*released {
+            released = condvar.wait(released).unwrap_or_else(|err| err.into_inner());
+        }
+        *released = false;
+        self.stage_tx.send_replace(None);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct CancelFlag {
@@ -52,7 +126,7 @@ impl BridgeFailure {
         }
     }
 
-    fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::new("INVALID_REQUEST", message)
     }
 
@@ -94,6 +168,8 @@ pub struct BridgeService {
     kernel: Option<AppKernel>,
     notes: Arc<StickyNoteModule>,
     gate: std::sync::Mutex<()>,
+    #[cfg(test)]
+    commit_barrier: Option<Arc<CommitBarrier>>,
 }
 
 impl BridgeService {
@@ -115,7 +191,26 @@ impl BridgeService {
             kernel: Some(kernel),
             notes,
             gate: std::sync::Mutex::new(()),
+            #[cfg(test)]
+            commit_barrier: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_commit_barrier(&mut self, barrier: Option<Arc<CommitBarrier>>) {
+        self.commit_barrier = barrier;
+    }
+
+    /// Samples cancellation only at `before-commit`. A later cancel cannot turn a finished write into `CANCELLED`.
+    fn checkpoint(&self, stage: &'static str, cancel: &CancelFlag) {
+        #[cfg(test)]
+        if let Some(barrier) = &self.commit_barrier {
+            barrier.checkpoint(stage, cancel);
+        }
+        #[cfg(not(test))]
+        {
+            let _ = (stage, cancel);
+        }
     }
 
     pub fn capabilities(&self) -> Vec<String> {
@@ -184,7 +279,7 @@ impl BridgeService {
             Ok(open) => open,
             Err(err) => return CallResult::Failure(err),
         };
-        if let Err(err) = validate_text(title, MAX_TITLE_CHARS, false) {
+        if let Err(err) = validate_title(title) {
             return CallResult::Failure(err);
         }
         if let Err(err) = validate_text(content, MAX_CONTENT_CHARS, true) {
@@ -201,16 +296,20 @@ impl BridgeService {
                 "sticky note module is disabled",
             ));
         }
+        self.checkpoint("before-commit", cancel);
         if cancel.is_cancelled() {
             return CallResult::Failure(BridgeFailure::cancelled());
         }
         match self.persist_closed_note(title, content) {
-            Ok(record) => match serde_json::to_value(record) {
-                Ok(value) => CallResult::Reply(value),
-                Err(_) => CallResult::Failure(BridgeFailure::internal(
-                    "note could not be serialized",
-                )),
-            },
+            Ok(record) => {
+                self.checkpoint("after-commit", cancel);
+                match serde_json::to_value(record) {
+                    Ok(value) => CallResult::Reply(value),
+                    Err(_) => CallResult::Failure(BridgeFailure::internal(
+                        "note could not be serialized",
+                    )),
+                }
+            }
             Err(err) => CallResult::Failure(err),
         }
     }
@@ -227,21 +326,16 @@ impl BridgeService {
             Ok(query) => query,
             Err(err) => return CallResult::Failure(err),
         };
-        if query.chars().count() > MAX_QUERY_CHARS {
-            return CallResult::Failure(BridgeFailure::invalid("query is too long"));
-        }
-        let query = query.trim();
-        if query.is_empty() {
-            return CallResult::Failure(BridgeFailure::invalid("query must not be empty"));
-        }
-        if let Err(err) = validate_text(query, MAX_QUERY_CHARS, false) {
-            return CallResult::Failure(err);
-        }
-        let limit = match required_u64(map, "limit", 1, MAX_SEARCH_LIMIT) {
+        let query = match normalize_query(query) {
+            Ok(query) => query,
+            Err(err) => return CallResult::Failure(err),
+        };
+        let limit = match bounded_u64(map, "limit", DEFAULT_SEARCH_LIMIT, 1, MAX_SEARCH_LIMIT) {
             Ok(limit) => limit as usize,
             Err(err) => return CallResult::Failure(err),
         };
-        let offset = match required_u64(map, "offset", 0, MAX_SEARCH_OFFSET) {
+        let offset = match bounded_u64(map, "offset", DEFAULT_SEARCH_OFFSET, 0, MAX_SEARCH_OFFSET)
+        {
             Ok(offset) => offset as usize,
             Err(err) => return CallResult::Failure(err),
         };
@@ -315,7 +409,7 @@ impl BridgeService {
             ));
         }
         if let Some(title) = title.as_deref() {
-            if let Err(err) = validate_text(title, MAX_TITLE_CHARS, false) {
+            if let Err(err) = validate_title(title) {
                 return CallResult::Failure(err);
             }
         }
@@ -324,7 +418,7 @@ impl BridgeService {
                 return CallResult::Failure(err);
             }
         }
-        let expected = match optional_i64(map, "expected_updated_at") {
+        let expected = match optional_safe_i64(map, "expected_updated_at") {
             Ok(expected) => expected,
             Err(err) => return CallResult::Failure(err),
         };
@@ -334,16 +428,20 @@ impl BridgeService {
                 "sticky note module is disabled",
             ));
         }
+        self.checkpoint("before-commit", cancel);
         if cancel.is_cancelled() {
             return CallResult::Failure(BridgeFailure::cancelled());
         }
         match self.update_note(&id, title.as_deref(), content.as_deref(), expected) {
-            Ok(record) => match serde_json::to_value(record) {
-                Ok(value) => CallResult::Reply(value),
-                Err(_) => CallResult::Failure(BridgeFailure::internal(
-                    "note could not be serialized",
-                )),
-            },
+            Ok(record) => {
+                self.checkpoint("after-commit", cancel);
+                match serde_json::to_value(record) {
+                    Ok(value) => CallResult::Reply(value),
+                    Err(_) => CallResult::Failure(BridgeFailure::internal(
+                        "note could not be serialized",
+                    )),
+                }
+            }
             Err(err) => CallResult::Failure(err),
         }
     }
@@ -352,12 +450,14 @@ impl BridgeService {
         if let Err(err) = require_empty_object(params) {
             return CallResult::Failure(err);
         }
+        self.checkpoint("before-commit", cancel);
         if cancel.is_cancelled() {
             return CallResult::Failure(BridgeFailure::cancelled());
         }
         if let Err(err) = self.shutdown_kernel() {
             return CallResult::Failure(err);
         }
+        self.checkpoint("after-commit", cancel);
         CallResult::Stop(json!({ "stopping": true }))
     }
 
@@ -430,8 +530,20 @@ impl BridgeService {
             return Err(BridgeFailure::internal("note update was not applied"));
         }
         self.ensure_timestamp_advanced(id, existing.updated_at)?;
-        self.with_notes(|notes, kernel| notes.get_note(kernel.context(), id))?
-            .ok_or_else(|| BridgeFailure::internal("updated note could not be read"))
+        let record = self
+            .with_notes(|notes, kernel| notes.get_note(kernel.context(), id))?
+            .ok_or_else(|| BridgeFailure::internal("updated note could not be read"))?;
+        if record.updated_at < 0 || record.updated_at > JS_MAX_SAFE_INTEGER {
+            return Err(BridgeFailure::internal(
+                "note timestamp is not a safe integer",
+            ));
+        }
+        if existing.updated_at < JS_MAX_SAFE_INTEGER && record.updated_at <= existing.updated_at {
+            return Err(BridgeFailure::internal(
+                "note timestamp could not be advanced",
+            ));
+        }
+        Ok(record)
     }
 
     /// `updated_at` is millisecond wall time. The bridge keeps the conflict token
@@ -440,10 +552,15 @@ impl BridgeService {
         let current = self
             .with_notes(|notes, kernel| notes.get_note(kernel.context(), id))?
             .ok_or_else(|| BridgeFailure::internal("updated note could not be read"))?;
-        if current.updated_at > previous {
+        if current.updated_at > previous && current.updated_at <= JS_MAX_SAFE_INTEGER {
             return Ok(());
         }
-        let next = previous.saturating_add(1);
+        if previous >= JS_MAX_SAFE_INTEGER || current.updated_at > JS_MAX_SAFE_INTEGER {
+            return Err(BridgeFailure::internal(
+                "note timestamp could not be advanced",
+            ));
+        }
+        let next = previous + 1;
         let kernel = self
             .kernel
             .as_ref()
@@ -730,14 +847,15 @@ fn required_bool(map: &Map<String, Value>, key: &str) -> Result<bool, BridgeFail
     }
 }
 
-fn required_u64(
+fn bounded_u64(
     map: &Map<String, Value>,
     key: &str,
+    default: u64,
     min: u64,
     max: u64,
 ) -> Result<u64, BridgeFailure> {
     let Some(value) = map.get(key) else {
-        return Err(BridgeFailure::invalid(format!("{key} is required")));
+        return Ok(default);
     };
     let Some(number) = value.as_u64() else {
         return Err(BridgeFailure::invalid(format!("{key} must be an integer")));
@@ -748,13 +866,20 @@ fn required_u64(
     Ok(number)
 }
 
-fn optional_i64(map: &Map<String, Value>, key: &str) -> Result<Option<i64>, BridgeFailure> {
+fn optional_safe_i64(map: &Map<String, Value>, key: &str) -> Result<Option<i64>, BridgeFailure> {
     match map.get(key) {
         None => Ok(None),
         Some(value) => {
             let Some(number) = value.as_i64() else {
-                return Err(BridgeFailure::invalid(format!("{key} must be an integer")));
+                return Err(BridgeFailure::invalid(format!(
+                    "{key} must be a non-negative safe integer"
+                )));
             };
+            if !(0..=JS_MAX_SAFE_INTEGER).contains(&number) {
+                return Err(BridgeFailure::invalid(format!(
+                    "{key} must be a non-negative safe integer"
+                )));
+            }
             Ok(Some(number))
         }
     }
@@ -766,6 +891,35 @@ fn validate_id(id: &str) -> Result<(), BridgeFailure> {
     } else {
         Ok(())
     }
+}
+
+fn validate_title(value: &str) -> Result<(), BridgeFailure> {
+    let count = value.chars().count();
+    if !(1..=MAX_TITLE_CHARS).contains(&count)
+        || value.chars().all(char::is_whitespace)
+        || has_forbidden_control(value, false)
+    {
+        Err(BridgeFailure::invalid(
+            "title must contain 1 to 500 characters and non-whitespace text",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn normalize_query(value: &str) -> Result<&str, BridgeFailure> {
+    if value.chars().count() > MAX_QUERY_CHARS || has_forbidden_control(value, false) {
+        return Err(BridgeFailure::invalid(
+            "query must contain 1 to 200 characters and non-whitespace text",
+        ));
+    }
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(BridgeFailure::invalid(
+            "query must contain 1 to 200 characters and non-whitespace text",
+        ));
+    }
+    Ok(trimmed)
 }
 
 fn validate_text(value: &str, max_chars: usize, multiline: bool) -> Result<(), BridgeFailure> {
@@ -967,5 +1121,89 @@ mod tests {
             Ok(_) => panic!("mismatched pipe name was accepted"),
             Err(err) => assert!(err.contains("pipe name")),
         }
+    }
+
+    #[test]
+    fn note_tokens_advance_and_text_limits_match_the_contract() {
+        let dir = fixture("tokens");
+        let mut service = BridgeService::open(&dir).unwrap();
+        let created = match call(
+            &mut service,
+            "notes.create",
+            json!({"title": "  padded  ", "content_md": "token-body", "open": false}),
+        ) {
+            CallResult::Reply(value) => value,
+            other => panic!("create failed: {other:?}"),
+        };
+        assert_eq!(created["title"], "  padded  ");
+        let id = created["id"].as_str().unwrap().to_string();
+        let mut token = created["updated_at"].as_i64().unwrap();
+        assert!((0..=JS_MAX_SAFE_INTEGER).contains(&token));
+        for revision in 0..3 {
+            let content = format!("rev-{revision}");
+            let updated = match call(
+                &mut service,
+                "notes.update",
+                json!({"id": id, "content_md": content, "expected_updated_at": token}),
+            ) {
+                CallResult::Reply(value) => value,
+                other => panic!("update failed: {other:?}"),
+            };
+            let next = updated["updated_at"].as_i64().unwrap();
+            assert!(next > token);
+            assert!(next <= JS_MAX_SAFE_INTEGER);
+            assert_eq!(updated["content_md"], format!("rev-{revision}"));
+            token = next;
+        }
+        assert!(matches!(
+            call(
+                &mut service,
+                "notes.update",
+                json!({"id": id, "content_md": "stale", "expected_updated_at": token - 1})
+            ),
+            CallResult::Failure(BridgeFailure { code: "CONFLICT", .. })
+        ));
+        assert!(matches!(
+            call(
+                &mut service,
+                "notes.update",
+                json!({"id": id, "content_md": "negative", "expected_updated_at": -1})
+            ),
+            CallResult::Failure(BridgeFailure { code: "INVALID_REQUEST", .. })
+        ));
+        assert!(matches!(
+            call(
+                &mut service,
+                "notes.update",
+                json!({"id": id, "title": "   ", "content_md": "blank-title"})
+            ),
+            CallResult::Failure(BridgeFailure { code: "INVALID_REQUEST", .. })
+        ));
+        let found = match call(&mut service, "notes.search", json!({"query": "  rev-2  "})) {
+            CallResult::Reply(value) => value,
+            other => panic!("search failed: {other:?}"),
+        };
+        assert_eq!(found["total"], 1);
+        assert_eq!(found["items"][0]["content_md"], "rev-2");
+        assert_eq!(found["items"][0]["title"], "  padded  ");
+        let cancelled = CancelFlag::new();
+        cancelled.cancel();
+        assert!(matches!(
+            service.call(
+                "notes.create",
+                &json!({"title": "No", "content_md": "should-not-persist", "open": false}),
+                &cancelled
+            ),
+            CallResult::Failure(BridgeFailure { code: "CANCELLED", .. })
+        ));
+        let after = match call(
+            &mut service,
+            "notes.search",
+            json!({"query": "should-not-persist", "limit": 5, "offset": 0}),
+        ) {
+            CallResult::Reply(value) => value,
+            other => panic!("search failed: {other:?}"),
+        };
+        assert_eq!(after["total"], 0);
     }
 }
