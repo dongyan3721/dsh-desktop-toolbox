@@ -3,11 +3,14 @@
 //! Resource bounds for one connection:
 //! - 1 request runs at a time, so a mutation commits or returns `CANCELLED` before the next one starts.
 //! - 16 requests may wait behind the running request. A further request gets `INVALID_REQUEST` and is not started.
+//! - The socket reader delivers at most one decoded batch into the session. It waits before reading more, so a blocked response cannot pile up 4MiB frames. A request and a cancel read together stay in that one batch.
 //! - 32 unmatched cancellation ids are remembered. Older unmatched ids are dropped. Cancels for a running or queued request are kept.
 //!
 //! `CANCELLED` is sent only when no mutation has committed. After the database write, the terminal response is success even if cancel arrives while that write finishes. Parent exit, disconnect, and `bridge.shutdown` wait for the running call to finish before the session returns; the process then flushes the kernel. Requests still queued when shutdown or parent exit begins are rejected with `CANCELLED` and are not started.
 
 use std::collections::{HashSet, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::json;
@@ -21,6 +24,45 @@ use crate::service::{BridgeFailure, BridgeService, CallResult, CancelFlag};
 const READ_CHUNK: usize = 64 * 1024;
 const MAX_QUEUED_REQUESTS: usize = 16;
 const MAX_UNMATCHED_CANCELS: usize = 32;
+/// Decoded batches waiting in the reader→session channel.
+const MAX_INBOUND_BATCHES: usize = 1;
+/// The channel slot plus the batch the reader holds while `send` waits.
+const MAX_IN_FLIGHT_BATCHES: usize = MAX_INBOUND_BATCHES + 1;
+/// Smallest legal frame is a 4-byte length and one payload byte.
+const MIN_FRAME_BYTES: usize = 4 + 1;
+/// One batch is the frames completed by a single read: one leftover frame plus the frames in that chunk.
+const MAX_FRAMES_PER_BATCH: usize = 1 + READ_CHUNK / MIN_FRAME_BYTES;
+const MAX_IN_FLIGHT_MESSAGES: usize = MAX_IN_FLIGHT_BATCHES * MAX_FRAMES_PER_BATCH;
+
+struct InboundMeter {
+    batches: AtomicUsize,
+    messages: AtomicUsize,
+    peak_batches: AtomicUsize,
+    peak_messages: AtomicUsize,
+}
+
+impl InboundMeter {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            batches: AtomicUsize::new(0),
+            messages: AtomicUsize::new(0),
+            peak_batches: AtomicUsize::new(0),
+            peak_messages: AtomicUsize::new(0),
+        })
+    }
+
+    fn enter(&self, messages: usize) {
+        let batches = self.batches.fetch_add(1, Ordering::AcqRel) + 1;
+        let messages = self.messages.fetch_add(messages.max(1), Ordering::AcqRel) + messages.max(1);
+        self.peak_batches.fetch_max(batches, Ordering::AcqRel);
+        self.peak_messages.fetch_max(messages, Ordering::AcqRel);
+    }
+
+    fn leave(&self, messages: usize) {
+        self.batches.fetch_sub(1, Ordering::AcqRel);
+        self.messages.fetch_sub(messages.max(1), Ordering::AcqRel);
+    }
+}
 
 struct CancelTable {
     unmatched_order: VecDeque<String>,
@@ -91,25 +133,40 @@ struct ActiveRequest {
 
 pub async fn serve_connection<R, W>(
     reader: R,
-    mut writer: W,
+    writer: W,
     service: std::sync::Arc<Mutex<BridgeService>>,
     instance_id: String,
-    mut parent_exit: watch::Receiver<bool>,
+    parent_exit: watch::Receiver<bool>,
 ) -> SessionStop
 where
     R: AsyncRead + Unpin + Send + 'static,
     W: AsyncWrite + Unpin,
 {
-    let (tx, mut rx) = mpsc::unbounded_channel();
-    tokio::spawn(read_frames(reader, tx));
+    serve_connection_metered(reader, writer, service, instance_id, parent_exit, None).await
+}
+
+async fn serve_connection_metered<R, W>(
+    reader: R,
+    mut writer: W,
+    service: std::sync::Arc<Mutex<BridgeService>>,
+    instance_id: String,
+    mut parent_exit: watch::Receiver<bool>,
+    meter: Option<Arc<InboundMeter>>,
+) -> SessionStop
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin,
+{
+    let (tx, mut rx) = mpsc::channel(MAX_INBOUND_BATCHES);
+    let mut reader_task = Some(tokio::spawn(read_frames(reader, tx, meter.clone())));
     let mut pending: VecDeque<ClientMessage> = VecDeque::new();
     let mut active: Option<ActiveRequest> = None;
     let mut early_cancels = CancelTable::new();
     let mut handshake = false;
 
-    loop {
+    let stop = 'session: loop {
         if *parent_exit.borrow() {
-            return settle_parent(&mut active, &mut pending, &mut writer).await;
+            break 'session settle_parent(&mut active, &mut pending, &mut writer, &mut parent_exit).await;
         }
         if let Some(stop) = pump(
             &mut pending,
@@ -119,11 +176,12 @@ where
             &service,
             &instance_id,
             &mut handshake,
+            &mut parent_exit,
         )
         .await
         {
             drain_active(&mut active).await;
-            return stop;
+            break 'session stop;
         }
 
         let exit_cancel = active.as_ref().map(|job| job.cancel.clone());
@@ -142,23 +200,34 @@ where
                     if let Some(flag) = exit_cancel {
                         flag.cancel();
                     }
-                    return settle_parent(&mut active, &mut pending, &mut writer).await;
+                    break 'session settle_parent(&mut active, &mut pending, &mut writer, &mut parent_exit).await;
                 }
             }
             incoming = rx.recv() => {
                 match incoming {
-                    Some(ReaderEvent::Batch(messages)) => pending.extend(messages),
-                    Some(ReaderEvent::Fault(fault)) => {
-                        eprintln!(
-                            "dsh-toolbox-native: closing connection after a protocol fault ({})",
-                            protocol_fault_name(&fault)
-                        );
-                        drain_active(&mut active).await;
-                        return SessionStop::ProtocolFault;
+                    Some(event) => {
+                        if let Some(meter) = &meter {
+                            meter.leave(event_messages(&event));
+                        }
+                        match event {
+                            ReaderEvent::Batch(messages) => pending.extend(messages),
+                            ReaderEvent::Fault(fault) => {
+                                eprintln!(
+                                    "dsh-toolbox-native: closing connection after a protocol fault ({})",
+                                    protocol_fault_name(&fault)
+                                );
+                                drain_active(&mut active).await;
+                                break 'session SessionStop::ProtocolFault;
+                            }
+                            ReaderEvent::Eof => {
+                                drain_active(&mut active).await;
+                                break 'session SessionStop::Disconnected;
+                            }
+                        }
                     }
-                    Some(ReaderEvent::Eof) | None => {
+                    None => {
                         drain_active(&mut active).await;
-                        return SessionStop::Disconnected;
+                        break 'session SessionStop::Disconnected;
                     }
                 }
             }
@@ -168,20 +237,36 @@ where
                     CallResult::Failure(BridgeFailure::internal("request task stopped"))
                 });
                 if matches!(result, CallResult::Stop(_)) {
-                    if let Some(stop) = reject_unstarted(&mut pending, &mut writer).await {
-                        return stop;
+                    if let Some(stop) =
+                        reject_unstarted(&mut pending, &mut writer, &mut parent_exit).await
+                    {
+                        break 'session stop;
                     }
                 }
-                if let Some(stop) = write_call_result(&mut writer, &job.id, result).await {
-                    return stop;
+                if let Some(stop) =
+                    write_call_result(&mut writer, &job.id, result, &mut parent_exit).await
+                {
+                    break 'session stop;
                 }
             }
         }
+    };
+    stop_reader(&mut reader_task).await;
+    stop
+}
+
+async fn stop_reader(reader_task: &mut Option<JoinHandle<()>>) {
+    if let Some(task) = reader_task.take() {
+        task.abort();
+        let _ = task.await;
     }
 }
 
-async fn read_frames<R>(mut reader: R, tx: mpsc::UnboundedSender<ReaderEvent>)
-where
+async fn read_frames<R>(
+    mut reader: R,
+    tx: mpsc::Sender<ReaderEvent>,
+    meter: Option<Arc<InboundMeter>>,
+) where
     R: AsyncRead + Unpin,
 {
     let mut decoder = FrameDecoder::default();
@@ -189,12 +274,12 @@ where
     loop {
         match reader.read(&mut buf).await {
             Ok(0) | Err(_) => {
-                let _ = tx.send(ReaderEvent::Eof);
+                let _ = emit(&tx, &meter, ReaderEvent::Eof).await;
                 return;
             }
             Ok(size) => match decoder.push(&buf[..size]) {
                 Err(fault) => {
-                    let _ = tx.send(ReaderEvent::Fault(fault));
+                    let _ = emit(&tx, &meter, ReaderEvent::Fault(fault)).await;
                     return;
                 }
                 Ok(frames) => {
@@ -203,20 +288,48 @@ where
                         match parse_message(&frame) {
                             Ok(message) => batch.push(message),
                             Err(fault) => {
-                                if !batch.is_empty() {
-                                    let _ = tx.send(ReaderEvent::Batch(batch));
+                                if !batch.is_empty()
+                                    && !emit(&tx, &meter, ReaderEvent::Batch(batch)).await
+                                {
+                                    return;
                                 }
-                                let _ = tx.send(ReaderEvent::Fault(fault));
+                                let _ = emit(&tx, &meter, ReaderEvent::Fault(fault)).await;
                                 return;
                             }
                         }
                     }
-                    if !batch.is_empty() && tx.send(ReaderEvent::Batch(batch)).is_err() {
+                    if !batch.is_empty() && !emit(&tx, &meter, ReaderEvent::Batch(batch)).await {
                         return;
                     }
                 }
             },
         }
+    }
+}
+
+fn event_messages(event: &ReaderEvent) -> usize {
+    match event {
+        ReaderEvent::Batch(messages) => messages.len().max(1),
+        ReaderEvent::Fault(_) | ReaderEvent::Eof => 1,
+    }
+}
+
+async fn emit(
+    tx: &mpsc::Sender<ReaderEvent>,
+    meter: &Option<Arc<InboundMeter>>,
+    event: ReaderEvent,
+) -> bool {
+    let messages = event_messages(&event);
+    if let Some(meter) = meter {
+        meter.enter(messages);
+    }
+    if tx.send(event).await.is_err() {
+        if let Some(meter) = meter {
+            meter.leave(messages);
+        }
+        false
+    } else {
+        true
     }
 }
 
@@ -228,6 +341,7 @@ async fn pump<W>(
     service: &std::sync::Arc<Mutex<BridgeService>>,
     instance_id: &str,
     handshake: &mut bool,
+    parent_exit: &mut watch::Receiver<bool>,
 ) -> Option<SessionStop>
 where
     W: AsyncWrite + Unpin,
@@ -243,14 +357,55 @@ where
         &mut outgoing,
     );
     for frame in outgoing {
-        if writer.write_all(&frame).await.is_err() {
-            return Some(SessionStop::Disconnected);
+        if let Err(stop) = write_all_checked(writer, &frame, parent_exit).await {
+            return Some(stop);
         }
     }
-    if writer.flush().await.is_err() {
-        return Some(SessionStop::Disconnected);
+    if let Err(stop) = flush_checked(writer, parent_exit).await {
+        return Some(stop);
     }
     stop
+}
+
+async fn write_all_checked<W>(
+    writer: &mut W,
+    bytes: &[u8],
+    parent_exit: &mut watch::Receiver<bool>,
+) -> Result<(), SessionStop>
+where
+    W: AsyncWrite + Unpin,
+{
+    tokio::select! {
+        biased;
+        changed = parent_exit.changed() => {
+            if changed.is_err() || *parent_exit.borrow() {
+                Err(SessionStop::ParentExited)
+            } else {
+                writer.write_all(bytes).await.map_err(|_| SessionStop::Disconnected)
+            }
+        }
+        result = writer.write_all(bytes) => result.map_err(|_| SessionStop::Disconnected),
+    }
+}
+
+async fn flush_checked<W>(
+    writer: &mut W,
+    parent_exit: &mut watch::Receiver<bool>,
+) -> Result<(), SessionStop>
+where
+    W: AsyncWrite + Unpin,
+{
+    tokio::select! {
+        biased;
+        changed = parent_exit.changed() => {
+            if changed.is_err() || *parent_exit.borrow() {
+                Err(SessionStop::ParentExited)
+            } else {
+                writer.flush().await.map_err(|_| SessionStop::Disconnected)
+            }
+        }
+        result = writer.flush() => result.map_err(|_| SessionStop::Disconnected),
+    }
 }
 
 fn collect_outgoing(
@@ -387,7 +542,12 @@ fn collect_outgoing(
     }
 }
 
-async fn write_call_result<W>(writer: &mut W, id: &str, result: CallResult) -> Option<SessionStop>
+async fn write_call_result<W>(
+    writer: &mut W,
+    id: &str,
+    result: CallResult,
+    parent_exit: &mut watch::Receiver<bool>,
+) -> Option<SessionStop>
 where
     W: AsyncWrite + Unpin,
 {
@@ -415,14 +575,16 @@ where
         Ok(frame) => frame,
         Err(_) => return Some(SessionStop::ProtocolFault),
     };
-    if writer.write_all(&frame).await.is_err() {
-        return Some(SessionStop::Disconnected);
+    if let Err(stop) = write_all_checked(writer, &frame, parent_exit).await {
+        return Some(stop);
     }
     if stop.is_some() {
         let _ = writer.shutdown().await;
         return stop;
     }
-    let _ = writer.flush().await;
+    if let Err(stop) = flush_checked(writer, parent_exit).await {
+        return Some(stop);
+    }
     None
 }
 
@@ -485,6 +647,7 @@ async fn settle_parent<W>(
     active: &mut Option<ActiveRequest>,
     pending: &mut VecDeque<ClientMessage>,
     writer: &mut W,
+    parent_exit: &mut watch::Receiver<bool>,
 ) -> SessionStop
 where
     W: AsyncWrite + Unpin,
@@ -497,25 +660,31 @@ where
         };
         let stopping = matches!(result, CallResult::Stop(_));
         if stopping {
-            if reject_unstarted(pending, writer).await.is_some() {
-                return SessionStop::Disconnected;
+            if let Some(stop) = reject_unstarted(pending, writer, parent_exit).await {
+                return stop;
             }
         }
-        if write_call_result(writer, &job.id, result).await.is_some() {
-            return SessionStop::Disconnected;
+        if let Some(stop) = write_call_result(writer, &job.id, result, parent_exit).await {
+            return stop;
         }
-        if !stopping && reject_unstarted(pending, writer).await.is_some() {
-            return SessionStop::Disconnected;
+        if !stopping {
+            if let Some(stop) = reject_unstarted(pending, writer, parent_exit).await {
+                return stop;
+            }
         }
         return SessionStop::ParentExited;
     }
-    if reject_unstarted(pending, writer).await.is_some() {
-        return SessionStop::Disconnected;
+    if let Some(stop) = reject_unstarted(pending, writer, parent_exit).await {
+        return stop;
     }
     SessionStop::ParentExited
 }
 
-async fn reject_unstarted<W>(pending: &mut VecDeque<ClientMessage>, writer: &mut W) -> Option<SessionStop>
+async fn reject_unstarted<W>(
+    pending: &mut VecDeque<ClientMessage>,
+    writer: &mut W,
+    parent_exit: &mut watch::Receiver<bool>,
+) -> Option<SessionStop>
 where
     W: AsyncWrite + Unpin,
 {
@@ -536,12 +705,12 @@ where
             Ok(frame) => frame,
             Err(_) => return Some(SessionStop::ProtocolFault),
         };
-        if writer.write_all(&frame).await.is_err() {
-            return Some(SessionStop::Disconnected);
+        if let Err(stop) = write_all_checked(writer, &frame, parent_exit).await {
+            return Some(stop);
         }
     }
-    if writer.flush().await.is_err() {
-        return Some(SessionStop::Disconnected);
+    if let Err(stop) = flush_checked(writer, parent_exit).await {
+        return Some(stop);
     }
     None
 }
@@ -1015,5 +1184,91 @@ mod tests {
             .unwrap();
         assert_eq!(drained, 1);
         assert_eq!(late, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inbound_batches_stay_bounded_when_responses_block() {
+        let dir = fixture("inbound-pressure");
+        let service = std::sync::Arc::new(Mutex::new(BridgeService::open(&dir).unwrap()));
+        let meter = InboundMeter::new();
+        let (client, server) = duplex(1024);
+        let (server_read, server_write) = tokio::io::split(server);
+        let (parent_tx, parent_rx) = watch::channel(false);
+        let instance = "11111111-1111-4111-8111-111111111111".to_string();
+        let server_task = tokio::spawn(serve_connection_metered(
+            server_read,
+            server_write,
+            service,
+            instance.clone(),
+            parent_rx,
+            Some(Arc::clone(&meter)),
+        ));
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+        client_write
+            .write_all(
+                &encode_json(&json!({"v": 1, "type": "hello", "instanceId": instance})).unwrap(),
+            )
+            .await
+            .unwrap();
+        let ready = read_frame(&mut client_read).await;
+        assert_eq!(ready["type"], "ready");
+
+        let mut sent = 0_usize;
+        for index in 0..400 {
+            let frame = request(&format!("pressure-{index}"), "status", json!({}));
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(40),
+                client_write.write_all(&frame),
+            )
+            .await
+            {
+                Ok(Ok(())) => sent += 1,
+                _ => break,
+            }
+        }
+        let peak_batches = meter.peak_batches.load(Ordering::Acquire);
+        let peak_messages = meter.peak_messages.load(Ordering::Acquire);
+        assert!(sent > 0, "no request was written");
+        assert!(
+            sent < 400,
+            "the reader kept consuming requests while responses were blocked; sent {sent}"
+        );
+        assert!(
+            peak_batches <= MAX_IN_FLIGHT_BATCHES,
+            "in-flight batches {peak_batches} exceeded {MAX_IN_FLIGHT_BATCHES}"
+        );
+        assert!(
+            peak_messages <= MAX_IN_FLIGHT_MESSAGES,
+            "in-flight messages {peak_messages} exceeded {MAX_IN_FLIGHT_MESSAGES}"
+        );
+        assert!(peak_batches >= 1, "pressure did not reach the reader channel");
+        drop(parent_tx);
+        let stop = tokio::time::timeout(std::time::Duration::from_secs(2), server_task)
+            .await
+            .expect("session kept the reader alive after stop")
+            .unwrap();
+        assert_eq!(stop, SessionStop::ParentExited);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stopping_aborts_the_reader_before_the_client_disconnects() {
+        let mut session = start_session("reader-stop").await;
+        session.parent_tx.send(true).unwrap();
+        let stop = tokio::time::timeout(std::time::Duration::from_secs(2), session.server_task)
+            .await
+            .expect("session waited for the pipe to close")
+            .unwrap();
+        assert_eq!(stop, SessionStop::ParentExited);
+        let write = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            session.client_write.write_all(
+                &encode_json(&json!({"v": 1, "type": "cancel", "id": "late"})).unwrap(),
+            ),
+        )
+        .await;
+        assert!(
+            write.is_err() || write.unwrap().is_err(),
+            "the reader was still accepting bytes after the session stopped"
+        );
     }
 }
