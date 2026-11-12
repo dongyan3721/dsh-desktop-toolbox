@@ -1,6 +1,6 @@
 import { BridgeError } from './errors.js';
 
-export const MAX_ACTIVE_REQUESTS = 1000;
+export const MAX_ACTIVE_REQUESTS = 32;
 export const MAX_UNMATCHED_CANCELLATIONS = 1000;
 
 /**

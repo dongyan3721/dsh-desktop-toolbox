@@ -4,6 +4,7 @@ use crate::image::process_with_hook;
 use crate::output::{self, create_private_partial};
 use crate::types::{ImageConvertOptions, ImageOutputFormat, MediaJob};
 use app_core::{CoreError, CoreResult};
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -49,18 +50,19 @@ pub fn convert_image_exact_with(
         return Err(CoreError::Config("output already exists".into()));
     }
     let partial = create_private_partial(parent)?;
-    let outcome = publish_exact(request, &partial, cancelled, before_publish);
+    let published = Cell::new(false);
+    let outcome = publish_exact(request, &partial, cancelled, before_publish, &|| {
+        published.set(true);
+        after_publish();
+    });
     match outcome {
         Ok(()) => {
-            after_publish();
             let _ = output::remove_partial(&partial);
             Ok(ExactImageStatus::Completed)
         }
         Err(error) => {
-            let published = published_link(&partial, &request.output_path, &error);
             output::remove_partial(&partial);
-            if published {
-                after_publish();
+            if published.get() {
                 return Ok(ExactImageStatus::Completed);
             }
             if cancelled.load(Ordering::Acquire) {
@@ -76,6 +78,7 @@ fn publish_exact(
     partial: &Path,
     cancelled: &AtomicBool,
     before_publish: &dyn Fn(),
+    after_publish: &dyn Fn(),
 ) -> CoreResult<()> {
     let mut job = MediaJob::new("image_convert", request.input_path.clone());
     job.output_path = Some(request.output_path.clone());
@@ -86,26 +89,7 @@ fn publish_exact(
         height: None,
         preserve_aspect: true,
     };
-    process_with_hook(&job, &options, partial, cancelled, before_publish)
-}
-
-fn published_link(partial: &Path, output: &Path, error: &CoreError) -> bool {
-    let text = error.to_string();
-    if text.contains("refusing to overwrite")
-        || text.contains("cannot decode")
-        || text.contains("encoding failed")
-        || text.contains("job cancelled")
-        || text.contains("output already exists")
-    {
-        return false;
-    }
-    let Ok(partial) = std::fs::metadata(partial) else {
-        return false;
-    };
-    let Ok(output) = std::fs::metadata(output) else {
-        return false;
-    };
-    partial.len() > 0 && partial.len() == output.len()
+    process_with_hook(&job, &options, partial, cancelled, before_publish, after_publish)
 }
 
 fn sanitize_image_error(error: CoreError) -> CoreError {

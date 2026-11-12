@@ -191,6 +191,36 @@ fn staging_names(dir: &Path) -> Vec<String> {
 }
 
 #[test]
+fn exact_publication_is_committed_even_if_staging_cleanup_reports_an_error() {
+    let dir = worktree_fixture("published-cleanup-error");
+    let input = dir.join("source.png");
+    let output = dir.join("output.png");
+    sample_png(&input);
+    let status = convert_image_exact_with(
+        &ExactImageRequest {
+            input_path: input,
+            output_path: output.clone(),
+            format: ImageOutputFormat::Png,
+        },
+        &std::sync::atomic::AtomicBool::new(false),
+        &|| {},
+        &|| {
+            assert!(output.is_file());
+            let staging = staging_names(&dir);
+            assert_eq!(staging.len(), 1);
+            // Inject NotFound in the post-publication unlink, after the real
+            // hard-link commit. The output must still have canonical success.
+            fs::remove_file(dir.join(&staging[0])).unwrap();
+        },
+    )
+    .unwrap();
+    assert_eq!(status, ExactImageStatus::Completed);
+    let decoded = ::image::open(&output).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (12, 8));
+    assert!(staging_names(&dir).is_empty());
+}
+
+#[test]
 fn exact_conversion_uses_real_codecs_and_settles_cancellation() {
     let dir = worktree_fixture("exact");
     let input = dir.join("source.png");

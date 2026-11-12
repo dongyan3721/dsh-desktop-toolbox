@@ -67,6 +67,14 @@ pub fn prepare_output(
 }
 
 pub fn finalize_output(partial: &Path, output: &Path) -> CoreResult<()> {
+    finalize_output_with_hook(partial, output, &|| {})
+}
+
+pub(crate) fn finalize_output_with_hook(
+    partial: &Path,
+    output: &Path,
+    after_publish: &dyn Fn(),
+) -> CoreResult<()> {
     let result = (|| {
         // hard_link fails if output appeared concurrently, so an existing user file is never replaced.
         fs::hard_link(partial, output).map_err(|error| {
@@ -75,6 +83,7 @@ pub fn finalize_output(partial: &Path, output: &Path) -> CoreResult<()> {
                 format!("refusing to overwrite {}: {error}", output.display()),
             ))
         })?;
+        after_publish();
         fs::remove_file(partial)?;
         Ok(())
     })();
