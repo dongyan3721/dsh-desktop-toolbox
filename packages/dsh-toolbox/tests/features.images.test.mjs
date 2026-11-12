@@ -150,6 +150,67 @@ test('image conversion schema and domain checks reject invalid input before auth
   assert.equal(bridge.calls.length, 0)
 })
 
+test('image paths reject unpaired surrogates and controls before authorization', async () => {
+  let authorized = 0
+  const bridge = createFakeBridge()
+  const tool = imageTool(bridge, {
+    authorizePaths: async () => {
+      authorized += 1
+      return true
+    },
+  })
+
+  for (const args of [
+    { inputPath: 'D:\\bad\uD800.png', outputPath: OUTPUT, format: 'webp' },
+    { inputPath: INPUT, outputPath: 'D:\\bad\u0000.webp', format: 'webp' },
+    { inputPath: INPUT, outputPath: 'D:\\line\nbreak.webp', format: 'webp' },
+  ]) {
+    await assert.rejects(
+      tool.execute(args, { signal: freshSignal() }),
+      error => error.code === 'INVALID_REQUEST',
+    )
+  }
+  assert.equal(authorized, 0)
+  assert.equal(bridge.calls.length, 0)
+
+  const unicodeInput = 'D:\\图片\\输入😀.png'
+  const unicodeOutput = 'D:\\图片\\输出😀.webp'
+  await tool.execute(
+    { inputPath: unicodeInput, outputPath: unicodeOutput, format: 'webp' },
+    { signal: freshSignal() },
+  )
+  assert.deepEqual(bridge.calls[0].params, {
+    inputPath: unicodeInput,
+    outputPath: unicodeOutput,
+    format: 'webp',
+  })
+})
+
+test('image results are sanitized to the protocol fields', async () => {
+  const bridge = createFakeBridge(() => ({
+    outputPath: OUTPUT,
+    format: 'webp',
+    stagingPath: 'D:\\private\\staging.tmp',
+  }))
+  const tool = imageTool(bridge, { authorizePaths: async () => true })
+
+  const value = await tool.execute(
+    { inputPath: INPUT, outputPath: OUTPUT, format: 'webp' },
+    { signal: freshSignal() },
+  )
+  assert.deepEqual(value, { outputPath: OUTPUT, format: 'webp' })
+
+  const badBridge = createFakeBridge(() => ({ outputPath: 'D:\\bad\uD800.webp', format: 'webp' }))
+  const badTool = imageTool(badBridge, { authorizePaths: async () => true })
+  await assert.rejects(
+    badTool.execute(
+      { inputPath: INPUT, outputPath: OUTPUT, format: 'webp' },
+      { signal: freshSignal() },
+    ),
+    error => error.code === 'INTERNAL',
+  )
+})
+
 test('image conversion propagates bridge errors unchanged', async () => {
   const failure = Object.assign(new Error('output exists'), { code: 'CONFLICT' })
   const bridge = createFakeBridge(() => { throw failure })
@@ -229,6 +290,49 @@ test('cancellation during the bridge request is forwarded through exec.signal', 
   assert.equal(receivedSignal, controller.signal)
   controller.abort()
   await assert.rejects(pending, { name: 'AbortError' })
+})
+
+test('an authoritative image success survives a signal aborted after dispatch', async () => {
+  const controller = new AbortController()
+  let calls = 0
+  const bridge = {
+    async request(_method, _params, options) {
+      calls += 1
+      assert.equal(options.signal, controller.signal)
+      controller.abort()
+      return { outputPath: OUTPUT, format: 'webp' }
+    },
+  }
+  const tool = imageTool(bridge, { authorizePaths: async () => true })
+
+  const value = await tool.execute(
+    { inputPath: INPUT, outputPath: OUTPUT, format: 'webp' },
+    { signal: controller.signal },
+  )
+
+  assert.equal(controller.signal.aborted, true)
+  assert.deepEqual(value, { outputPath: OUTPUT, format: 'webp' })
+  assert.equal(calls, 1)
+})
+
+test('CANCELLED, OUTCOME_UNKNOWN and other stable image errors propagate without retry', async () => {
+  for (const code of ['CANCELLED', 'OUTCOME_UNKNOWN', 'TIMEOUT', 'DISCONNECTED', 'INTERNAL']) {
+    const failure = Object.assign(new Error(`native ${code}`), {
+      code,
+      causeCode: 'CANCELLED',
+    })
+    const bridge = createFakeBridge(() => { throw failure })
+    const tool = imageTool(bridge, { authorizePaths: async () => true })
+
+    await assert.rejects(
+      tool.execute(
+        { inputPath: INPUT, outputPath: OUTPUT, format: 'webp' },
+        { signal: freshSignal() },
+      ),
+      error => error === failure && error.code === code,
+    )
+    assert.equal(bridge.calls.length, 1)
+  }
 })
 
 test('image renderer is pure and does not authorize or call the bridge', () => {

@@ -154,6 +154,9 @@ test('note search maps query and pagination, defaulting limit and offset', async
 
   await search.execute({ query: '会议', limit: 5, offset: 10 }, { signal: freshSignal() })
   assert.deepEqual(bridge.calls[1].params, { query: '会议', limit: 5, offset: 10 })
+
+  await search.execute({ query: '会议', limit: 20, offset: 10_000 }, { signal: freshSignal() })
+  assert.deepEqual(bridge.calls[2].params, { query: '会议', limit: 20, offset: 10_000 })
 })
 
 test('note search validates query, limit and offset before the bridge', async () => {
@@ -169,7 +172,7 @@ test('note search validates query, limit and offset before the bridge', async ()
     error => error.code === 'INVALID_REQUEST',
   )
   await assert.rejects(
-    search.execute({ query: 'x', limit: 101 }, { signal: freshSignal() }),
+    search.execute({ query: 'x', limit: 21 }, { signal: freshSignal() }),
     error => error.code === 'INVALID_REQUEST',
   )
   await assert.rejects(
@@ -178,6 +181,10 @@ test('note search validates query, limit and offset before the bridge', async ()
   )
   await assert.rejects(
     search.execute({ query: 'x', offset: -1 }, { signal: freshSignal() }),
+    error => error.code === 'INVALID_REQUEST',
+  )
+  await assert.rejects(
+    search.execute({ query: 'x', offset: 10_001 }, { signal: freshSignal() }),
     error => error.code === 'INVALID_REQUEST',
   )
   assert.equal(bridge.calls.length, 0)
@@ -244,6 +251,197 @@ test('note update propagates CONFLICT from the bridge', async () => {
     update.execute({ id: 'note-1', title: 'T', expected_updated_at: 1 }, { signal: freshSignal() }),
     error => error === failure,
   )
+})
+
+test('note text limits count Unicode scalars and preserve valid original text', async () => {
+  const bridge = createFakeBridge(method => (
+    method === 'notes.search' ? { items: [], total: 0 } : noteRecord()
+  ))
+  const tools = createNoteTools(bridge)
+  const create = tool(tools, 'toolbox_note_create')
+  const search = tool(tools, 'toolbox_note_search')
+  const update = tool(tools, 'toolbox_note_update')
+
+  const title = '😀'.repeat(500)
+  const content = '第一行\r\n\t第二行 😀'
+  await create.execute({ title, content_md: content }, { signal: freshSignal() })
+  assert.equal(bridge.calls[0].params.title, title)
+  assert.equal(bridge.calls[0].params.content_md, content)
+
+  const query = '🔎'.repeat(200)
+  await search.execute({ query }, { signal: freshSignal() })
+  assert.equal(bridge.calls[1].params.query, query)
+
+  const id = '🆔'.repeat(80)
+  await update.execute({ id, content_md: '' }, { signal: freshSignal() })
+  assert.equal(bridge.calls[2].params.id, id)
+
+  for (const [entry, args] of [
+    [create, { title: '😀'.repeat(501), content_md: '' }],
+    [search, { query: '🔎'.repeat(201) }],
+    [update, { id: '🆔'.repeat(81), title: 'T' }],
+  ]) {
+    await assert.rejects(
+      entry.execute(args, { signal: freshSignal() }),
+      error => error.code === 'INVALID_REQUEST',
+    )
+  }
+  assert.equal(bridge.calls.length, 3)
+})
+
+test('content_md accepts exactly the Unicode scalar limit and rejects one more', async () => {
+  const bridge = createFakeBridge()
+  const create = tool(createNoteTools(bridge), 'toolbox_note_create')
+  const maximum = 'a'.repeat(1_048_576)
+
+  await create.execute({ title: 'T', content_md: maximum }, { signal: freshSignal() })
+  assert.equal(bridge.calls[0].params.content_md.length, 1_048_576)
+
+  await assert.rejects(
+    create.execute({ title: 'T', content_md: maximum + 'a' }, { signal: freshSignal() }),
+    error => error.code === 'INVALID_REQUEST',
+  )
+  assert.equal(bridge.calls.length, 1)
+})
+
+test('unpaired surrogates and disallowed controls are rejected before the bridge', async () => {
+  const bridge = createFakeBridge()
+  const tools = createNoteTools(bridge)
+  const create = tool(tools, 'toolbox_note_create')
+  const search = tool(tools, 'toolbox_note_search')
+  const update = tool(tools, 'toolbox_note_update')
+
+  for (const [entry, args] of [
+    [create, { title: 'bad\uD800', content_md: '' }],
+    [create, { title: '\uDC00bad', content_md: '' }],
+    [create, { title: 'T', content_md: 'bad\u0000' }],
+    [create, { title: 'T', content_md: 'bad\u001F' }],
+    [create, { title: 'line\nbreak', content_md: '' }],
+    [create, { title: '　', content_md: '' }],
+    [search, { query: 'bad\uD800' }],
+    [search, { query: 'line\nbreak' }],
+    [search, { query: '　' }],
+    [update, { id: 'a\uD800', title: 'T' }],
+    [update, { id: 'line\nbreak', title: 'T' }],
+    [update, { id: 'note-1', title: 'bad\u001F' }],
+  ]) {
+    await assert.rejects(
+      entry.execute(args, { signal: freshSignal() }),
+      error => error.code === 'INVALID_REQUEST',
+    )
+  }
+  assert.equal(bridge.calls.length, 0)
+
+  const allowedContent = 'a\tb\r\nc'
+  await create.execute({ title: 'T', content_md: allowedContent }, { signal: freshSignal() })
+  assert.equal(bridge.calls[0].params.content_md, allowedContent)
+})
+
+test('real native StickyNoteRecord shapes are sanitized with safe integer boundaries', async () => {
+  const nativeRecord = {
+    id: '123e4567-e89b-12d3-a456-426614174000',
+    title: '真实记录',
+    content_md: '# 标题\r\n正文\t',
+    theme_color: 'sky',
+    opacity: 1,
+    pos_x: -2147483648,
+    pos_y: 2147483647,
+    width: 4294967295,
+    height: 0,
+    is_pinned: true,
+    is_open: false,
+    updated_at: 9007199254740991,
+  }
+  const bridge = createFakeBridge(() => ({
+    items: [{ ...nativeRecord, created_at: 123, internal_field: 'ignored' }],
+    total: 1,
+  }))
+  const search = tool(createNoteTools(bridge), 'toolbox_note_search')
+
+  const value = await search.execute({ query: '真实' }, { signal: freshSignal() })
+
+  assert.deepEqual(value, { items: [nativeRecord], total: 1 })
+  assert.deepEqual(validateJsonSchemaValue(search.output.schema, value), [])
+  assert.deepEqual(JSON.parse(JSON.stringify(value)), value)
+
+  for (const overrides of [
+    { updated_at: 9007199254740992 },
+    { pos_x: 9007199254740992 },
+    { width: 9007199254740992 },
+    { opacity: Infinity },
+  ]) {
+    const badBridge = createFakeBridge(() => ({ items: [noteRecord(overrides)], total: 1 }))
+    const badSearch = tool(createNoteTools(badBridge), 'toolbox_note_search')
+    await assert.rejects(
+      badSearch.execute({ query: 'x' }, { signal: freshSignal() }),
+      error => error.code === 'INTERNAL',
+    )
+  }
+
+  const badTotalBridge = createFakeBridge(() => ({ items: [], total: 9007199254740992 }))
+  const badTotalSearch = tool(createNoteTools(badTotalBridge), 'toolbox_note_search')
+  await assert.rejects(
+    badTotalSearch.execute({ query: 'x' }, { signal: freshSignal() }),
+    error => error.code === 'INTERNAL',
+  )
+})
+
+test('an authoritative success survives a signal aborted after dispatch', async () => {
+  const createController = new AbortController()
+  let createCalls = 0
+  const createBridge = {
+    async request(_method, _params, options) {
+      createCalls += 1
+      assert.equal(options.signal, createController.signal)
+      createController.abort()
+      return noteRecord()
+    },
+  }
+  const create = tool(createNoteTools(createBridge), 'toolbox_note_create')
+  const created = await create.execute(
+    { title: 'T', content_md: 'C' },
+    { signal: createController.signal },
+  )
+  assert.equal(createController.signal.aborted, true)
+  assert.deepEqual(created, noteRecord())
+  assert.equal(createCalls, 1)
+
+  const updateController = new AbortController()
+  let updateCalls = 0
+  const updatedRecord = noteRecord({ title: '已提交' })
+  const updateBridge = {
+    async request(_method, _params, options) {
+      updateCalls += 1
+      assert.equal(options.signal, updateController.signal)
+      updateController.abort()
+      return updatedRecord
+    },
+  }
+  const update = tool(createNoteTools(updateBridge), 'toolbox_note_update')
+  const updated = await update.execute(
+    { id: 'note-1', title: '已提交' },
+    { signal: updateController.signal },
+  )
+  assert.equal(updateController.signal.aborted, true)
+  assert.deepEqual(updated, updatedRecord)
+  assert.equal(updateCalls, 1)
+})
+
+test('CANCELLED, OUTCOME_UNKNOWN and other stable errors propagate without retry', async () => {
+  for (const code of ['CANCELLED', 'OUTCOME_UNKNOWN', 'TIMEOUT', 'DISCONNECTED', 'INTERNAL']) {
+    const failure = Object.assign(new Error(`native ${code}`), {
+      code,
+      causeCode: 'CANCELLED',
+    })
+    const bridge = createFakeBridge(() => { throw failure })
+    const update = tool(createNoteTools(bridge), 'toolbox_note_update')
+
+    await assert.rejects(
+      update.execute({ id: 'note-1', title: 'T' }, { signal: freshSignal() }),
+      error => error === failure && error.code === code,
+    )
+    assert.equal(bridge.calls.length, 1)
+  }
 })
 
 test('pre-aborted calls reject before the bridge is used', async () => {
