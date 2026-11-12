@@ -5,8 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use app_core::{AppKernel, AppKernelBuilder, AppModule, CoreError, MODULE_CATALOG};
-use mod_sticky_note::{StickyNoteModule, StickyNoteRecord};
-use rusqlite::params;
+use mod_sticky_note::{ClosedNoteSave, StickyNoteModule, StickyNoteRecord};
 use serde_json::{json, Map, Value};
 use crate::protocol::{expected_pipe_name, PROTOCOL_VERSION};
 
@@ -24,7 +23,7 @@ const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 /// Test hook that pauses a mutating call at one commit stage.
 ///
 /// `before-commit` is immediately before the cancellation sample and the database write.
-/// `after-commit` is after the write and the conflict token are durable.
+/// `after-commit` is after that write's single commit, including a note's content and token.
 #[cfg(test)]
 #[derive(Clone)]
 pub(crate) struct CommitBarrier {
@@ -496,21 +495,13 @@ impl BridgeService {
         content: &str,
     ) -> Result<StickyNoteRecord, BridgeFailure> {
         let _gate = self.lock_gate();
-        let created = self
+        let record = self
             .with_notes(|notes, kernel| {
-                notes.create_note(kernel.context(), Some(title), Some(content), None)
+                notes.create_closed_note(kernel.context(), Some(title), Some(content))
             })
             .map_err(|_| BridgeFailure::internal("note create failed"))?;
-        let id = created.id.clone();
-        if let Err(err) = self.with_notes(|notes, kernel| notes.close_note(kernel.context(), &id)) {
-            let _ = self.with_notes(|notes, kernel| notes.delete_note(kernel.context(), &id));
-            return Err(err);
-        }
-        let record = self
-            .with_notes(|notes, kernel| notes.get_note(kernel.context(), &id))?
-            .ok_or_else(|| BridgeFailure::internal("created note could not be read"))?;
         if record.is_open || self.active_window_count() != 0 {
-            let _ = self.with_notes(|notes, kernel| notes.delete_note(kernel.context(), &id));
+            let _ = self.with_notes(|notes, kernel| notes.delete_note(kernel.context(), &record.id));
             return Err(BridgeFailure::internal(
                 "note was stored with a desktop window still open",
             ));
@@ -526,82 +517,30 @@ impl BridgeService {
         expected: Option<i64>,
     ) -> Result<StickyNoteRecord, BridgeFailure> {
         let _gate = self.lock_gate();
-        let existing = self
-            .with_notes(|notes, kernel| notes.get_note(kernel.context(), id))?
-            .ok_or_else(|| BridgeFailure::new("NOT_FOUND", "note was not found"))?;
-        if expected.is_some_and(|expected| expected != existing.updated_at) {
-            return Err(BridgeFailure::new(
+        match self.with_notes(|notes, kernel| {
+            notes.save_closed_content(kernel.context(), id, title, content, expected)
+        })? {
+            ClosedNoteSave::Applied(record) => {
+                if !(0..=JS_MAX_SAFE_INTEGER).contains(&record.updated_at) {
+                    return Err(BridgeFailure::internal(
+                        "note timestamp is not a safe integer",
+                    ));
+                }
+                if expected.is_some_and(|expected| record.updated_at <= expected) {
+                    return Err(BridgeFailure::internal(
+                        "note timestamp could not be advanced",
+                    ));
+                }
+                Ok(record)
+            }
+            ClosedNoteSave::Conflict(_) => Err(BridgeFailure::new(
                 "CONFLICT",
                 "note was updated since it was read",
-            ));
+            )),
+            ClosedNoteSave::Missing => {
+                Err(BridgeFailure::new("NOT_FOUND", "note was not found"))
+            }
         }
-        let content_to_store = content.unwrap_or(existing.content_md.as_str());
-        let write = self.with_notes(|notes, kernel| {
-            notes.save_content(
-                kernel.context(),
-                id,
-                title,
-                content_to_store,
-                None,
-                None,
-            )
-        })?;
-        if !write.applied {
-            return Err(BridgeFailure::internal("note update was not applied"));
-        }
-        self.ensure_timestamp_advanced(id, existing.updated_at)?;
-        let record = self
-            .with_notes(|notes, kernel| notes.get_note(kernel.context(), id))?
-            .ok_or_else(|| BridgeFailure::internal("updated note could not be read"))?;
-        if record.updated_at < 0 || record.updated_at > JS_MAX_SAFE_INTEGER {
-            return Err(BridgeFailure::internal(
-                "note timestamp is not a safe integer",
-            ));
-        }
-        if existing.updated_at < JS_MAX_SAFE_INTEGER && record.updated_at <= existing.updated_at {
-            return Err(BridgeFailure::internal(
-                "note timestamp could not be advanced",
-            ));
-        }
-        Ok(record)
-    }
-
-    /// `updated_at` is millisecond wall time. The bridge keeps the conflict token
-    /// strictly increasing when the clock does not move, under the data-dir lock.
-    fn ensure_timestamp_advanced(&self, id: &str, previous: i64) -> Result<(), BridgeFailure> {
-        let current = self
-            .with_notes(|notes, kernel| notes.get_note(kernel.context(), id))?
-            .ok_or_else(|| BridgeFailure::internal("updated note could not be read"))?;
-        if current.updated_at > previous && current.updated_at <= JS_MAX_SAFE_INTEGER {
-            return Ok(());
-        }
-        if previous >= JS_MAX_SAFE_INTEGER || current.updated_at > JS_MAX_SAFE_INTEGER {
-            return Err(BridgeFailure::internal(
-                "note timestamp could not be advanced",
-            ));
-        }
-        let next = previous + 1;
-        let kernel = self
-            .kernel
-            .as_ref()
-            .ok_or_else(|| BridgeFailure::internal("bridge is stopping"))?;
-        let affected = kernel
-            .context()
-            .db
-            .with_conn(|conn| {
-                let affected = conn.execute(
-                    "UPDATE sticky_notes SET updated_at = ?1 WHERE id = ?2 AND updated_at = ?3",
-                    params![next, id, current.updated_at],
-                )?;
-                Ok(affected)
-            })
-            .map_err(|_| BridgeFailure::internal("note timestamp could not be advanced"))?;
-        if affected != 1 {
-            return Err(BridgeFailure::internal(
-                "note timestamp could not be advanced",
-            ));
-        }
-        Ok(())
     }
 
     fn with_notes<T>(
