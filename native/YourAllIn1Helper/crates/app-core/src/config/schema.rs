@@ -5,7 +5,10 @@ use serde_json::{Map, Value};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 /// Current schema version of `config.json`.
-pub const CURRENT_CONFIG_VERSION: u32 = 4;
+pub const CURRENT_CONFIG_VERSION: u32 = 6;
+
+/// Grants for `sticky_note` are explicit only at this generation or newer.
+pub const STICKY_GRANT_GENERATION: u32 = 1;
 
 /// Thread-safe shared configuration handle injected into `ModuleContext`.
 pub type SharedConfig = Arc<RwLock<AppConfig>>;
@@ -183,6 +186,13 @@ pub struct ModulesConfig {
     pub enabled: HashMap<String, bool>,
     /// Each feature owns the typed schema of its settings; core only persists JSON.
     pub settings: HashMap<String, Value>,
+    /// Explicit Agent grants. A missing key is false. Unsupported IDs never become allowed.
+    #[serde(default)]
+    pub agent_access: HashMap<String, bool>,
+    /// Support-list generation. Missing or 0 means `sticky_note: true` was stored before notes
+    /// were an Agent module and must not become a grant.
+    #[serde(default)]
+    pub agent_support_generation: u32,
     #[serde(flatten)]
     pub unknown_fields: Map<String, Value>,
 }
@@ -194,6 +204,8 @@ impl Default for ModulesConfig {
                 .map(|module| (module.id.to_string(), true))
                 .collect(),
             settings: HashMap::new(),
+            agent_access: HashMap::new(),
+            agent_support_generation: STICKY_GRANT_GENERATION,
             unknown_fields: Map::new(),
         }
     }
@@ -202,6 +214,17 @@ impl ModulesConfig {
     /// Custom modules can be mounted without adding a core configuration field.
     pub fn is_enabled(&self, id: &str) -> bool {
         self.enabled.get(id).copied().unwrap_or(true)
+    }
+
+    /// Stored grant for a module that actually supports Agent access.
+    pub fn agent_allowed(&self, id: &str) -> bool {
+        if !crate::agent_access::agent_supported(id) {
+            return false;
+        }
+        if id == "sticky_note" && self.agent_support_generation < STICKY_GRANT_GENERATION {
+            return false;
+        }
+        self.agent_access.get(id).copied().unwrap_or(false)
     }
 }
 

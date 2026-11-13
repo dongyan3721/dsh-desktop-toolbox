@@ -15,6 +15,7 @@ use crate::plugin_launch::DESKTOP_CAPABILITIES;
 
 const READ_CHUNK: usize = 64 * 1024;
 const MAX_INBOUND_BATCHES: usize = 1;
+const MAX_PENDING_REQUESTS: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlError {
@@ -41,6 +42,17 @@ pub trait DesktopControl: Send + Sync {
     fn open_panel(&self, module_id: &str, cancel: &AtomicBool) -> Result<Value, ControlError>;
     fn shutdown(&self, cancel: &AtomicBool) -> Result<Value, ControlError>;
     fn finish_accepted_shutdown(&self) {}
+    fn agent_call(
+        &self,
+        method: &str,
+        _params: &Value,
+        _cancel: Arc<AtomicBool>,
+    ) -> Result<Value, ControlError> {
+        Err(ControlError::new(
+            "UNSUPPORTED",
+            format!("{method} is not implemented by this desktop control"),
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,9 +107,10 @@ where
         if ready_sent {
             if let Some(stop) = dispatch_pending(
                 &mut pending,
-                control.as_ref(),
+                Arc::clone(&control),
                 &mut writer,
                 &mut parent_exit,
+                &mut rx,
             )
             .await
             {
@@ -119,7 +132,10 @@ where
             }
             incoming = rx.recv() => {
                 match incoming {
-                    Some(ReaderEvent::Batch(messages)) => pending.extend(messages),
+                    Some(ReaderEvent::Batch(messages)) => {
+                        if pending.len() + messages.len() > MAX_PENDING_REQUESTS { break 'session ControlStop::ProtocolFault; }
+                        pending.extend(messages);
+                    }
                     Some(ReaderEvent::Fault(fault)) => {
                         tracing::warn!(error = ?fault, "desktop control frame was rejected");
                         break 'session ControlStop::ProtocolFault;
@@ -177,13 +193,14 @@ fn parent_stop(control: &impl DesktopControl) -> ControlStop {
 
 async fn dispatch_pending<W, C>(
     pending: &mut VecDeque<ClientMessage>,
-    control: &C,
+    control: Arc<C>,
     writer: &mut W,
     parent_exit: &mut watch::Receiver<bool>,
+    incoming: &mut mpsc::Receiver<ReaderEvent>,
 ) -> Option<ControlStop>
 where
     W: AsyncWrite + Unpin,
-    C: DesktopControl,
+    C: DesktopControl + 'static,
 {
     while let Some(message) = pending.pop_front() {
         match message {
@@ -202,8 +219,53 @@ where
                     }
                     continue;
                 }
-                let cancel = AtomicBool::new(false);
-                let result = call_method(control, &method, &params, &cancel);
+                let cancel = Arc::new(AtomicBool::new(false));
+                let worker_cancel = Arc::clone(&cancel);
+                let worker_control = Arc::clone(&control);
+                let worker_method = method.clone();
+                // Blocking desktop/PNG/UI waits must not block the session's
+                // reader: cancellation and parent loss remain observable.
+                let mut worker = tokio::task::spawn_blocking(move || {
+                    call_method(worker_control.as_ref(), &worker_method, &params, &worker_cancel)
+                });
+                let result = loop {
+                    tokio::select! {
+                        biased;
+                        finished = &mut worker => break finished.unwrap_or_else(|_| Err(ControlError::new("INTERNAL", "desktop operation did not finish"))),
+                        changed = parent_exit.changed() => {
+                            if changed.is_err() || *parent_exit.borrow() {
+                                cancel.store(true, Ordering::Release);
+                                let _ = worker.await;
+                                return Some(parent_stop(control.as_ref()));
+                            }
+                        }
+                        event = incoming.recv() => {
+                            let stop = match event {
+                                Some(ReaderEvent::Batch(messages)) => {
+                                    let mut fault = false;
+                                    for message in messages {
+                                        match message {
+                                            ClientMessage::Cancel { id: cancel_id } if cancel_id == id => cancel.store(true, Ordering::Release),
+                                            ClientMessage::Hello { .. } => { fault = true; break; }
+                                            other => {
+                                                if pending.len() >= MAX_PENDING_REQUESTS { fault = true; break; }
+                                                pending.push_back(other);
+                                            }
+                                        }
+                                    }
+                                    if fault { Some(ControlStop::ProtocolFault) } else { None }
+                                }
+                                Some(ReaderEvent::Fault(_)) => Some(ControlStop::ProtocolFault),
+                                Some(ReaderEvent::Eof) | None => Some(ControlStop::Disconnected),
+                            };
+                            if let Some(stop) = stop {
+                                cancel.store(true, Ordering::Release);
+                                let _ = worker.await;
+                                return Some(stop);
+                            }
+                        }
+                    }
+                };
                 match result {
                     Ok(value) if method == "desktop.shutdown" => {
                         let _ = write_success(writer, &id, &value, parent_exit).await;
@@ -231,7 +293,7 @@ fn call_method(
     control: &impl DesktopControl,
     method: &str,
     params: &Value,
-    cancel: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
 ) -> Result<Value, ControlError> {
     if cancel.load(Ordering::Acquire) {
         return Err(ControlError::cancelled());
@@ -260,6 +322,7 @@ fn call_method(
             }
             Ok(value)
         }
+        _ if method.starts_with("agent.") => control.agent_call(method, params, Arc::clone(cancel)),
         _ => Err(ControlError::new("UNSUPPORTED", "method is not a desktop control")),
     }
 }
@@ -429,6 +492,7 @@ mod tests {
         panels: Mutex<Vec<String>>,
         shutdowns: AtomicUsize,
         finishes: AtomicUsize,
+        waiting: AtomicBool,
     }
 
     impl DesktopControl for FakeDesktop {
@@ -475,6 +539,16 @@ mod tests {
         fn finish_accepted_shutdown(&self) {
             self.finishes.fetch_add(1, Ordering::SeqCst);
         }
+
+        fn agent_call(&self, method: &str, _params: &Value, cancel: Arc<AtomicBool>) -> Result<Value, ControlError> {
+            if method != "agent.test.wait" { return Err(ControlError::new("UNSUPPORTED", "test method unavailable")); }
+            self.waiting.store(true, Ordering::Release);
+            for _ in 0..500 {
+                if cancel.load(Ordering::Acquire) { return Err(ControlError::cancelled()); }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Ok(json!({"applied": true}))
+        }
     }
 
     fn fake(fail_shutdown: bool) -> Arc<FakeDesktop> {
@@ -484,6 +558,7 @@ mod tests {
             panels: Mutex::new(Vec::new()),
             shutdowns: AtomicUsize::new(0),
             finishes: AtomicUsize::new(0),
+            waiting: AtomicBool::new(false),
         })
     }
 
@@ -548,11 +623,10 @@ mod tests {
         let ready = read_json(&mut read).await;
         assert_eq!(ready["type"], "ready");
         assert_eq!(ready["capabilities"][0], "status");
-        assert!(ready["capabilities"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|cap| cap.as_str().unwrap().starts_with("desktop.") || cap == "status"));
+        assert!(ready["capabilities"].as_array().unwrap().iter().all(|cap| {
+            let cap = cap.as_str().unwrap();
+            cap == "status" || cap.starts_with("desktop.") || cap.starts_with("agent.")
+        }));
 
         write
             .write_all(&request("main", "desktop.show_main", json!({})))
@@ -622,5 +696,39 @@ mod tests {
         assert_eq!(task.await.unwrap(), ControlStop::ParentExited);
         assert_eq!(control.shutdowns.load(Ordering::SeqCst), 1);
         assert_eq!(control.finishes.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn human_grant_command_is_not_a_control_method() {
+        let control = fake(false);
+        let error = call_method(
+            control.as_ref(),
+            "kernel_set_agent_access",
+            &json!({"module_id": "clipboard", "allowed": true, "actor": "human"}),
+            &Arc::new(AtomicBool::new(false)),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "UNSUPPORTED");
+        assert_eq!(control.opens.lock().unwrap().len(), 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancellation_arriving_after_dispatch_reaches_the_active_worker() {
+        let control = fake(false);
+        let (mut read, mut write, _parent_tx, ready_tx, task) = session(Arc::clone(&control)).await;
+        ready_tx.send(true).unwrap();
+        write.write_all(&encode_frame(br#"{"v":1,"type":"hello","instanceId":"11111111-1111-4111-8111-111111111111"}"#).unwrap()).await.unwrap();
+        let _ = read_json(&mut read).await;
+        write.write_all(&request("active", "agent.test.wait", json!({}))).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_millis(500), async {
+            while !control.waiting.load(Ordering::Acquire) { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        write.write_all(&encode_frame(br#"{"v":1,"type":"cancel","id":"active"}"#).unwrap()).await.unwrap();
+        let response = tokio::time::timeout(std::time::Duration::from_millis(500), read_json(&mut read)).await.unwrap();
+        assert_eq!(response["error"]["code"], "CANCELLED");
+        write.write_all(&request("after", "desktop.show_main", json!({}))).await.unwrap();
+        assert_eq!(read_json(&mut read).await["result"]["opened"], true);
+        write.shutdown().await.unwrap();
+        assert_eq!(task.await.unwrap(), ControlStop::Disconnected);
     }
 }

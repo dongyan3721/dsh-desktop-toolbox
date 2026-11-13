@@ -1,6 +1,6 @@
 {
   "name": "dsh-toolbox",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-beta.1",
   "description": "Original human desktop toolbox for DeepSeek Harness",
   "type": "module",
   "os": ["win32"],
@@ -9,6 +9,7 @@
   "exports": {
     ".": "./lib/index.js",
     "./desktop": "./lib/desktop/index.js",
+    "./agent": "./lib/agent/index.js",
     "./human-entry": "./lib/human-entry/host.js"
   },
   "files": ["lib", "resources", "cordis.patch.yml", "human.patch.yml", "README.md"],

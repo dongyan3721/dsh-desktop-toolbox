@@ -111,6 +111,43 @@ impl ConfigMigrationPipeline {
                     current_version = 4;
                     obj.insert("config_version".to_string(), Value::from(current_version));
                 }
+                4 => {
+                    // Old files have no Agent grants. An absent map means every module is denied.
+                    let modules = obj
+                        .entry("modules")
+                        .or_insert_with(|| Value::Object(Map::new()));
+                    if let Some(modules) = modules.as_object_mut() {
+                        modules
+                            .entry("agent_access")
+                            .or_insert_with(|| Value::Object(Map::new()));
+                    }
+                    current_version = 5;
+                    obj.insert("config_version".to_string(), Value::from(current_version));
+                }
+                5 => {
+                    // sticky_note joins the support list here. A true stored while it was
+                    // unsupported is cleared; the generation marker blocks that value if a
+                    // later edit puts it back without going through a fresh human grant.
+                    let modules = obj
+                        .entry("modules")
+                        .or_insert_with(|| Value::Object(Map::new()));
+                    if let Some(modules) = modules.as_object_mut() {
+                        let access = modules
+                            .entry("agent_access")
+                            .or_insert_with(|| Value::Object(Map::new()));
+                        if let Some(access) = access.as_object_mut() {
+                            if access.get("sticky_note").and_then(Value::as_bool) == Some(true) {
+                                access.insert("sticky_note".to_string(), Value::Bool(false));
+                            }
+                        }
+                        modules.insert(
+                            "agent_support_generation".to_string(),
+                            Value::from(STICKY_GRANT_GENERATION),
+                        );
+                    }
+                    current_version = 6;
+                    obj.insert("config_version".to_string(), Value::from(current_version));
+                }
                 _ => {
                     current_version = CURRENT_CONFIG_VERSION;
                     obj.insert("config_version".to_string(), Value::from(current_version));

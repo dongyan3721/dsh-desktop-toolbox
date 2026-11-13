@@ -294,6 +294,45 @@ impl DesktopControl for TauriDesktopControl {
         Ok(json!({"stopping": true}))
     }
 
+    fn agent_call(
+        &self,
+        method: &str,
+        params: &Value,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<Value, ControlError> {
+        if cancel.load(Ordering::Acquire) {
+            return Err(ControlError::cancelled());
+        }
+        let method = method.to_string();
+        let params = params.clone();
+        let on_ui = matches!(
+            method.as_str(),
+            "agent.ink.start" | "agent.ink.stop" | "agent.ink.passthrough"
+        );
+        if on_ui {
+            return self.on_main(move |app| {
+                let Some(host) = app.try_state::<Arc<DesktopHost>>() else {
+                    return Err(ControlError::new(
+                        "INTERNAL",
+                        "desktop runtime is not initialized",
+                    ));
+                };
+                crate::agent_api::dispatch(host.as_ref(), &method, &params, &cancel)
+            })?;
+        }
+        let Some(host) = self.on_main(|app| {
+            app.try_state::<Arc<DesktopHost>>()
+                .map(|host| host.inner().clone())
+        })?
+        else {
+            return Err(ControlError::new(
+                "INTERNAL",
+                "desktop runtime is not initialized",
+            ));
+        };
+        crate::agent_api::dispatch(host.as_ref(), &method, &params, &cancel)
+    }
+
     fn finish_accepted_shutdown(&self) {
         let app = self.app.clone();
         let _ = self.app.run_on_main_thread(move || {
