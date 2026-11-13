@@ -1,6 +1,6 @@
-# DSH Toolbox beta 1
+# DSH Toolbox first beta
 
-`0.1.0-beta.1`：Windows x64 原桌面工具箱迁移版。目标 Harness `0.2.2-rc.1`、Cordis `4.1.0`、Node 24。与同版本 `dsh-toolbox-client` 一起安装，侧栏“工具箱”打开原 Tauri 主窗；人的操作无需模型请求。
+`0.1.0-beta.2`：Windows x64 原桌面工具箱迁移版。目标 Harness `0.2.2-rc.1`、Cordis `4.1.0`、Node 24。与同版本 `dsh-toolbox-client` 一起安装，侧栏“工具箱”打开原 Tauri 主窗；人的操作无需模型请求。
 
 保留原十模块界面、窗口、托盘与快捷键。新配置只启用便笺；其他功能按需开启。功能启停与“允许 Agent 访问”独立，Agent 授权默认关闭。截图、剪贴板、屏幕注释、应用使用时长、便笺五项可在明确授权后与 Agent 共享同一桌面内核及数据。脚本、多媒体、窗口置顶、翻译、密码本不支持 Agent。
 

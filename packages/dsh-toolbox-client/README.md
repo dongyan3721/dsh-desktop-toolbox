@@ -8,4 +8,4 @@ The Host entry re-exports dsh-toolbox/human-entry. It consumes the independent t
 
 The earlier generic /toolbox-human channel was replaced after real profile testing found a provider-shadow-context registration failure in this installed SDK. The independent-provider SDK regression covers the supported exact-route composition and disposal.
 
-This is local beta 0.1.0-beta.1. The matching Host supports five separately granted Agent modules; this Client remains a human entry and grants no Agent access. See workspace docs/BETA1_ACCEPTANCE.zh-CN.md for measured scope and remaining manual credential, compatibility, data migration and license checks.
+This is local beta 0.1.0-beta.2. The matching Host supports five separately granted Agent modules; this Client remains a human entry and grants no Agent access. See workspace docs/BETA1_ACCEPTANCE.zh-CN.md for measured scope and remaining manual credential, compatibility, data migration and license checks.
