@@ -41,6 +41,10 @@ First verify installed 0.2.2-rc.1 public Client/command/menu extension and exter
 
 Preferred Host dependency name for the forthcoming owned desktop runtime is `toolboxDesktop`, methods `status(signal?)`, `showMain({signal}?)`, `openPanel(moduleId,{signal}?)`. This is a proposed service interface, not an existing SDK API. Codex supplies it. UI adapter should invoke this service from a verified human entry. No LLM request, slash-chat prompt, console command, or Tool call is accepted as the final visible entry.
 
+Codex implementation now lives in the integration worktree at `packages/dsh-toolbox/src/desktop/index.js` (read-only to other agents). `status` returns `{phase:'starting'|'ready'|'unavailable'|'stopping',nativeConnected:boolean,nativeVersion:string,capabilities:string[]}`. Open methods return `{opened:true}` or throw a stable-code Error. Only a later explicit open request may start a replacement after a known owned-process exit; uncertain calls are never automatically replayed. Its isolated non-GUI protocol/subprocess tests pass; this is not real Tauri acceptance yet.
+
+Installed references have been extracted read-only into the shared `vendor/harness-reference/@deepseek-ai/`: client-modules, cordis-client-runner, cordis-host-runner, client-ui-sidebar, client-ui-layout, client-ui-entry-customization, client-ui-commands, client-connection, api-remotes, native-command and web-app (all prefixed `dsh-`). Sidebar README documents global panel entries; actual external packaging must still be verified. Do not install against the shared root node_modules.
+
 If external entry requires a workspace-registered build preset or nonpublic app modifications, stop that implementation path, report concrete source evidence and propose supported options. Continue useful package/parity work without claiming the entry is complete. Do not weaken the acceptance gate.
 
 ## Acceptance and handoff
