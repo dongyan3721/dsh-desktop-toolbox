@@ -2,7 +2,10 @@
 
 将 `C:\Users\xcxix\PyCharmProjects\YourAllIn1Helper` 迁移为 DeepSeek Harness 插件。
 
+产品主线是**供人日常使用的工具箱**：先保留原界面、操作与快捷键，再按价值开放可选 Agent 接口。脚本、密码管理和使用时间统计可以保持人用。现有 alpha 是已验证的后端基础，桌面体验与快捷键尚未迁移，不能视为人的 MVP。
+
 - [迁移计划](docs/MIGRATION_PLAN.zh-CN.md)：架构、十个模块的迁移范围、阶段安排、数据与发布验收。
+- [人用优先实施计划](docs/HUMAN_FIRST_PLAN.zh-CN.md)：最新优先级、原快捷键对等清单和下一阶段人用闭环。
 - [勘察基线](docs/BASELINE.zh-CN.md)：本次实际检查结果、版本和待核对项。
 - [派工与验证记录](docs/COORDINATION.zh-CN.md)：三个本机 agent 的任务、已完成的样例验证和剩余工作。
 - [交付后的下一步计划](docs/NEXT_PHASE_PLAN.zh-CN.md)：第一轮交付复核、已确认缺口、联调及发布门槛。
@@ -31,6 +34,6 @@ node ./scripts/demo.mjs
 # 可附加 -PreviousPackage ./dist/dsh-toolbox-0.1.0-alpha.1.tgz 验证升级保留数据。
 ```
 
-验收脚本启动真实 CLI/Profile，不调用模型 API；检查便笺创建/查询/更新、重启持久化、配置重载、图片实际格式和卸载配置。Windows x64 是本轮运行目标，外部发布前仍需完整许可和额外系统兼容性审计。日常用户 Profile 不在本轮安装范围内。
+现有后端验收脚本启动真实 CLI/Profile，不调用模型 API；检查便笺创建/查询/更新、重启持久化、配置重载、图片实际格式和卸载配置。它不验证原生 GUI 或快捷键。Windows x64 是本轮运行目标，外部发布前仍需完整许可和额外系统兼容性审计。日常用户 Profile 不在本轮安装范围内。
 
 三位本机 agent 使用独立工作树：Cursor 实现原生桥，Antigravity 实现 Node 客户端，Zed 实现工具工厂。Codex 在 `.worktrees/integration` 集成并执行真实测试，通过门槛后合并 main。边界与接口见 [实施基线](docs/IMPLEMENTATION_BASELINE.zh-CN.md)、[桥协议](docs/BRIDGE_PROTOCOL.md) 及 `docs/tasks/`。

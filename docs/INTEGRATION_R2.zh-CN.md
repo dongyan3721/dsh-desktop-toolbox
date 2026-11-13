@@ -1,5 +1,7 @@
 # 第二轮集成与本机 alpha 验收
 
+后续定位修订：用户明确“人用体验与原快捷键优先”。本记录中的 MVP 指便笺/图片的技术闭环；`0.1.0-alpha.2` 不等于完整人用 MVP。技术测试事实保留，下一阶段按 [人用优先计划](HUMAN_FIRST_PLAN.zh-CN.md) 执行。
+
 日期：2026-11-13。实现与验收工作树：`D:\Code\dsh-toolbox\.worktrees\integration`，分支 `integration/notes-mvp`。本轮是便笺与图片 MVP 的本机验收，不是十个模块的全部迁移，也没有向 npm 或日常 Harness Profile 发布。
 
 集成已通过门槛并以 `9df82bc` 快进合并 main。最终 tgz、SHA-256 文件和运行资源已同步到主目录；主目录再次构建 ESM、复跑 92 项测试通过，并以全新 DSH_HOME 完成相同的升级/图片/卸载验收。最终主目录日志位于 `artifacts/package-acceptance/532efcd0-8120-4b48-b47d-d31e6b7404bc/`，结束后本轮原生进程检查无残留。三个原交付分支和工作树保留。
