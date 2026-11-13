@@ -72,12 +72,19 @@ fn forged_grant_never_authorizes_an_unsupported_module() {
     std::fs::write(dir.path().join("config.json"), forged.to_string()).unwrap();
     let kernel = kernel_with(dir.path(), &["clipboard"]);
     assert!(kernel.context().config.read().modules.agent_allowed("clipboard"));
+    assert!(kernel.agent_access_view("sticky_note").agent_supported);
     assert!(!kernel.context().config.read().modules.agent_allowed("sticky_note"));
+    assert_eq!(
+        kernel.context().config.read().modules.agent_support_generation,
+        crate::config::STICKY_GRANT_GENERATION
+    );
     assert!(!kernel.context().config.read().modules.agent_allowed("not_a_module"));
-    let denied = kernel.authorize_agent("sticky_note").unwrap_err();
-    assert_eq!(agent_error_code(&denied), Some("UNSUPPORTED"));
-    assert!(kernel.set_agent_access("sticky_note", true).is_err());
+    let unmounted = kernel.authorize_agent("sticky_note").unwrap_err();
+    assert_eq!(agent_error_code(&unmounted), Some("UNAVAILABLE"));
+    kernel.set_agent_access("sticky_note", true).unwrap();
+    assert!(kernel.context().config.read().modules.agent_allowed("sticky_note"));
     assert!(kernel.set_agent_access("not_a_module", true).is_err());
+    assert!(kernel.set_agent_access("media_proc", true).is_err());
     assert!(kernel.context().config.read().modules.agent_allowed("clipboard"));
 }
 
@@ -92,7 +99,9 @@ fn grants_are_independent_of_enablement_and_each_other() {
         assert!(!view.agent_allowed);
         assert!(!view.agent_effective);
     }
-    assert!(!kernel.agent_access_view("sticky_note").agent_supported);
+    assert!(kernel.agent_access_view("sticky_note").agent_supported);
+    assert!(!kernel.agent_access_view("sticky_note").agent_allowed);
+    assert!(!kernel.agent_access_view("media_proc").agent_supported);
 
     let disabled_denied = kernel.authorize_agent("clipboard").unwrap_err();
     assert_eq!(agent_error_code(&disabled_denied), Some("AGENT_ACCESS_DENIED"));
