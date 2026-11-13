@@ -5,11 +5,43 @@ use std::path::{Path, PathBuf};
 use app_core::{AppConfig, MODULE_CATALOG};
 use dsh_bridge::transport::expected_pipe_name;
 
+pub const AGENT_DATA_METHODS: &[&str] = &[
+    "agent.screenshot.monitors",
+    "agent.screenshot.capture",
+    "agent.clipboard.list",
+    "agent.clipboard.read_text",
+    "agent.clipboard.write_text",
+    "agent.ink.status",
+    "agent.ink.start",
+    "agent.ink.stop",
+    "agent.ink.passthrough",
+    "agent.ink.clear",
+    "agent.usage.status",
+    "agent.usage.overview",
+    "agent.usage.apps",
+    "agent.usage.hourly",
+];
+
 pub const DESKTOP_CAPABILITIES: &[&str] = &[
     "status",
     "desktop.show_main",
     "desktop.open_panel",
     "desktop.shutdown",
+    "agent.get_access",
+    "agent.screenshot.monitors",
+    "agent.screenshot.capture",
+    "agent.clipboard.list",
+    "agent.clipboard.read_text",
+    "agent.clipboard.write_text",
+    "agent.ink.status",
+    "agent.ink.start",
+    "agent.ink.stop",
+    "agent.ink.passthrough",
+    "agent.ink.clear",
+    "agent.usage.status",
+    "agent.usage.overview",
+    "agent.usage.apps",
+    "agent.usage.hourly",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

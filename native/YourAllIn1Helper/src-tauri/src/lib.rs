@@ -35,6 +35,7 @@ use std::{
     sync::Arc,
 };
 
+mod agent_api;
 mod clipboard_window;
 mod desktop_control;
 mod plugin_host;
@@ -127,6 +128,8 @@ pub struct DesktopHost {
     save_paths: native_save_dialog::SavePathRegistry,
     shortcut_preference_gate: parking_lot::Mutex<()>,
     shortcut_recording_owner: parking_lot::RwLock<Option<String>>,
+    /// Texts accepted by the mock clipboard path. Production writes go to the OS instead.
+    agent_clipboard_writes: parking_lot::Mutex<Vec<String>>,
 }
 
 impl DesktopHost {
@@ -293,6 +296,7 @@ impl DesktopHost {
             save_paths: native_save_dialog::SavePathRegistry::default(),
             shortcut_preference_gate: parking_lot::Mutex::new(()),
             shortcut_recording_owner: parking_lot::RwLock::new(None),
+            agent_clipboard_writes: parking_lot::Mutex::new(Vec::new()),
         };
         host.sync_panel_shortcuts()?;
         Ok(host)

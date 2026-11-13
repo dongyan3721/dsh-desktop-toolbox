@@ -41,6 +41,17 @@ pub trait DesktopControl: Send + Sync {
     fn open_panel(&self, module_id: &str, cancel: &AtomicBool) -> Result<Value, ControlError>;
     fn shutdown(&self, cancel: &AtomicBool) -> Result<Value, ControlError>;
     fn finish_accepted_shutdown(&self) {}
+    fn agent_call(
+        &self,
+        method: &str,
+        _params: &Value,
+        _cancel: &AtomicBool,
+    ) -> Result<Value, ControlError> {
+        Err(ControlError::new(
+            "UNSUPPORTED",
+            format!("{method} is not implemented by this desktop control"),
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,6 +271,7 @@ fn call_method(
             }
             Ok(value)
         }
+        _ if method.starts_with("agent.") => control.agent_call(method, params, cancel),
         _ => Err(ControlError::new("UNSUPPORTED", "method is not a desktop control")),
     }
 }
@@ -548,11 +560,10 @@ mod tests {
         let ready = read_json(&mut read).await;
         assert_eq!(ready["type"], "ready");
         assert_eq!(ready["capabilities"][0], "status");
-        assert!(ready["capabilities"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|cap| cap.as_str().unwrap().starts_with("desktop.") || cap == "status"));
+        assert!(ready["capabilities"].as_array().unwrap().iter().all(|cap| {
+            let cap = cap.as_str().unwrap();
+            cap == "status" || cap.starts_with("desktop.") || cap.starts_with("agent.")
+        }));
 
         write
             .write_all(&request("main", "desktop.show_main", json!({})))
