@@ -132,6 +132,7 @@ import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { invokeIpc, type StickyNoteRecord } from '../api/ipc';
 import Icons from './Icons.vue';
+import { sanitizeHtml } from '../utils/safeHtml';
 import { t } from '../utils/i18n';
 import { notify } from '../utils/toast';
 
@@ -186,7 +187,7 @@ const themeOptions = [
 const renderedHtml = computed(() => {
   let content = note.value.content_md || '';
   if (!content.trim()) {
-    return `<p style="color:#6e6e73;font-style:italic">${t('sticky.window.emptyRenderedHint')}</p>`;
+    return sanitizeHtml(`<p style="color:#6e6e73;font-style:italic">${t('sticky.window.emptyRenderedHint')}</p>`);
   }
 
   // 1. 优先渲染块级数学公式 $$...$$
@@ -213,11 +214,12 @@ const renderedHtml = computed(() => {
     }
   });
 
-  // 3. 执行标准 Markdown 解析 (标题、待办清单、加粗等)
+  // 3. 执行标准 Markdown 解析 (标题、待办清单、加粗等)，出口统一安全清洗：
+  //    Agent 共享内容里的脚本、事件属性、javascript: URL 不得进入 v-html，同时保留 Markdown/LaTeX
   try {
-    return marked.parse(content, { breaks: true, gfm: true }) as string;
+    return sanitizeHtml(marked.parse(content, { breaks: true, gfm: true }) as string);
   } catch {
-    return content;
+    return sanitizeHtml(content);
   }
 });
 
