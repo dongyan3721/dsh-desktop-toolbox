@@ -53,7 +53,7 @@ async function run(ctx, signal) {
   for (;;) {
     try { await desktop.agentCall('agent.ink.snapshot', {}, { signal }); break; }
     catch (error) {
-      if (error.code !== 'BUSY' || Date.now() >= readyDeadline) throw error;
+      if (!['BUSY', 'UNAVAILABLE'].includes(error.code) || Date.now() >= readyDeadline) throw error;
       await new Promise(resolve => setTimeout(resolve, 250));
     }
   }
