@@ -26,6 +26,16 @@ function extract(name) {
   for (const peer of Object.keys(manifest.peerDependencies || {})) {
     if (fs.existsSync(path.join(base, peer, 'package.json'))) extract(peer);
   }
+  // Native optional packages (e.g. sharp's Windows binding) are read-only
+  // installed inputs too. Copy only packages present for this host platform.
+  for (const optional of Object.keys(manifest.optionalDependencies || {})) {
+    const optionalManifestPath = path.join(base, optional, 'package.json');
+    if (!fs.existsSync(optionalManifestPath)) continue;
+    const optionalManifest = JSON.parse(fs.readFileSync(optionalManifestPath, 'utf8'));
+    const matches = (values, actual) => !Array.isArray(values)
+      || (!values.includes(`!${actual}`) && (values.every(value => value.startsWith('!')) || values.includes(actual)));
+    if (matches(optionalManifest.os, process.platform) && matches(optionalManifest.cpu, process.arch)) extract(optional);
+  }
 }
 const additional = process.argv.slice(2);
 if (additional.some(name => !/^@deepseek-ai\/[a-z0-9-]+$/.test(name))) throw new Error('Invalid additional SDK package');

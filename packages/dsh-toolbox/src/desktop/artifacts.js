@@ -13,16 +13,22 @@ export function checkDescriptor(value) {
     || value.mime_type !== 'image/png' || !Number.isSafeInteger(value.byte_length)
     || value.byte_length < 33 || value.byte_length > MAX_BYTES
     || !Number.isSafeInteger(value.width) || !Number.isSafeInteger(value.height)
-    || value.width < 1 || value.height < 1 || value.width * value.height > MAX_PIXELS) throw invalid();
+    || value.width < 1 || value.height < 1 || value.width * value.height > MAX_PIXELS
+    || (value.revision !== undefined && (!Number.isSafeInteger(value.revision) || value.revision < 0))) throw invalid();
   return { artifact_id: value.artifact_id, mime_type: 'image/png', byte_length: value.byte_length, width: value.width, height: value.height,
     ...(value.module_id !== undefined ? { module_id: value.module_id } : {}),
     ...(value.revision !== undefined ? { revision: value.revision } : {}) };
 }
 
 /** Only the native ledger resolves IDs; no local paths are ever read here. */
-export async function readAgentArtifact(desktop, descriptor, { signal } = {}) {
+export async function readAgentArtifact(desktop, descriptor, { signal, moduleId: requestedModule, revision: requestedRevision } = {}) {
   signal?.throwIfAborted();
-  const image = checkDescriptor(descriptor);
+  const image = checkDescriptor({ ...descriptor,
+    ...(requestedModule !== undefined ? { module_id: requestedModule } : {}),
+    ...(requestedRevision !== undefined ? { revision: requestedRevision } : {}),
+  });
+  if ((descriptor.module_id !== undefined && descriptor.module_id !== image.module_id)
+    || (descriptor.revision !== undefined && descriptor.revision !== image.revision)) throw invalid();
   const candidates = image.module_id === undefined ? ['screenshot', 'screen_ink'] : [image.module_id];
   if (candidates.some(id => !['screenshot', 'screen_ink'].includes(id))) throw invalid();
   const snapshot = await desktop.getAgentAccess({ signal });
@@ -66,6 +72,7 @@ export async function readAgentArtifact(desktop, descriptor, { signal } = {}) {
     offset += bytes.length;
   }
   const latest = await desktop.getAgentAccess({ signal });
+  if (latest.revision !== snapshot.revision) throw hostError('AGENT_ACCESS_DENIED', 'Image authorization changed while reading');
   if (!latest.modules.some(module => module.id === moduleId && module.agent_effective && module.agent_allowed && module.agent_supported)) {
     throw hostError('AGENT_ACCESS_DENIED', 'Image access was revoked');
   }
