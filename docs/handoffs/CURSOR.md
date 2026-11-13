@@ -1,7 +1,8 @@
 # Cursor / Grok 4.7 High 交接 — 原生桥第一轮
 
-工作树：`D:\Code\dsh-toolbox\.worktrees\cursor`  
-分支：`agent/cursor-native`  
+工作树：`D:\Code\dsh-toolbox\.worktrees\cursor`
+
+分支：`agent/cursor-native`
 未合并 `main`。主目录 `D:\Code\dsh-toolbox` 未改。
 
 ## 已实现

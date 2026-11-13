@@ -1,5 +1,7 @@
 # 实施基线：第一轮并行开发
 
+2026-11-13 产品方向更新：下文是第一轮后端准备的历史基线。后续以 [人用优先计划](HUMAN_FIRST_PLAN.zh-CN.md) 和修订后的迁移计划为准；先恢复原界面、桌面窗口与快捷键，再扩展可选 Agent 接口。
+
 日期：2026-11-12。当前工作区所有目录均在 `D:\Code\dsh-toolbox` 内。
 
 实际 Harness 安装：`E:\deepseek-harness`，注册版本 `0.2.2-rc.1`。CLI 为 `E:\deepseek-harness\resources\runtime\cli\bin\dsh.cmd`。实际检查 `--help` 成功；安装自带 Node `24.21.0`、pnpm `11.28.5`。系统 Node `24.17.0`、pnpm `10.34.9` 仍保留，不升级全局工具。

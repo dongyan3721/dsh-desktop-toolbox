@@ -1,0 +1,11 @@
+# Cursor / Grok 4.7 High — H0/H1 desktop host and shortcuts
+
+User authorized this round. Worktree D:/Code/dsh-toolbox/.worktrees/cursor, branch agent/cursor-native. Codex syncs main before dispatch. Read this worktree's updated AGENTS, HUMAN_FIRST_PLAN, H1_CONTRACT and guide. Main/other worktrees/original C project/installed Harness are read-only.
+
+Implement the formal GUI plugin-mode startup/control contract in H1_CONTRACT. Reuse original Tauri DesktopHost, Vue assets, panel/tray behavior, preferences, native shortcut registration and flush/exit coordinator. One kernel per instance/dataDir, no headless second kernel. Preserve source defaults and user overrides, unassigned actions, conflict detection, rollback and module enable/disable behavior. New startup must isolate data/WebView/log/temp and disable updater/demo/autostart; do not capture clipboard/screenshots/usage or touch credentials in development.
+
+Write scope: native/YourAllIn1Helper/src-tauri/**; necessary native workspace Cargo manifests/lock; minimal shared dsh-bridge transport exports only if genuinely needed and explained; docs/handoffs/CURSOR_H1.md. No src-ui edits, new Agent methods or root scripts/JS. Compile the unchanged UI inside your own worktree if needed for Tauri assets, without altering its sources. SDK junction is read-only; nested frontend dependencies/build outputs must be local, normal downloads use D caches.
+
+Split usable commits: (A) argument/config isolation, GUI ownership and non-GUI tests; (B) control pipe + true Tauri-thread actions/ready/stop; (C) shortcut/config/flush regressions as needed. Existing --smoke-test and standalone mode must remain compatible; do not run smoke modes that spawn desktop windows or seed real data. cargo tests/build with --locked and offline when cached, bounded jobs (e.g. -j2). Set own build/rust/cursor target/intermediates after Use-ProjectEnvironment. Build GUI binary but DO NOT LAUNCH it, register global keys, run GUI smoke, or manipulate the user's windows. Codex exclusively handles actual UI/physical keys.
+
+Deliver compiled path/hash, exact tests, public control interface and remaining failures. Request contract changes through handoff/message, never silently invent new shared APIs. Proceed now without reconfirmation.

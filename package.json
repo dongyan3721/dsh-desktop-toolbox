@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --test tests/prototype.test.mjs",
+    "test": "node --test tests/*.test.mjs packages/dsh-toolbox/tests/*.test.mjs",
     "demo": "node scripts/demo.mjs"
   }
 }

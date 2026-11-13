@@ -10,3 +10,4 @@ vendor/
 *.tsbuildinfo
 .cordis/
 .worktrees/
+packages/dsh-toolbox/resources/
