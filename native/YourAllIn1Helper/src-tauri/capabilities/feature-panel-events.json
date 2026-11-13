@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "feature-panel-events",
+  "description": "允许原独立功能面板订阅和清理内核、翻译及媒体进度事件；不授予文件或系统操作权限。",
+  "windows": [
+    "feature-screenshot", "feature-clipboard", "feature-screen_ink",
+    "feature-sticky_note", "feature-app_usage", "feature-script_runner",
+    "feature-translator", "feature-media_proc", "feature-window_pin",
+    "feature-password_vault"
+  ],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

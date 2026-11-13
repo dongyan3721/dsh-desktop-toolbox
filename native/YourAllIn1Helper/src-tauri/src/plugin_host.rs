@@ -298,7 +298,7 @@ impl DesktopControl for TauriDesktopControl {
         &self,
         method: &str,
         params: &Value,
-        cancel: &AtomicBool,
+        cancel: Arc<AtomicBool>,
     ) -> Result<Value, ControlError> {
         if cancel.load(Ordering::Acquire) {
             return Err(ControlError::cancelled());
@@ -307,7 +307,7 @@ impl DesktopControl for TauriDesktopControl {
         let params = params.clone();
         let on_ui = matches!(
             method.as_str(),
-            "agent.ink.start" | "agent.ink.stop" | "agent.ink.passthrough" | "agent.ink.clear"
+            "agent.ink.start" | "agent.ink.stop" | "agent.ink.passthrough"
         );
         if on_ui {
             return self.on_main(move |app| {
@@ -317,7 +317,7 @@ impl DesktopControl for TauriDesktopControl {
                         "desktop runtime is not initialized",
                     ));
                 };
-                crate::agent_api::dispatch(host.as_ref(), &method, &params, &AtomicBool::new(false))
+                crate::agent_api::dispatch(host.as_ref(), &method, &params, &cancel)
             })?;
         }
         let Some(host) = self.on_main(|app| {
@@ -330,7 +330,7 @@ impl DesktopControl for TauriDesktopControl {
                 "desktop runtime is not initialized",
             ));
         };
-        crate::agent_api::dispatch(host.as_ref(), &method, &params, cancel)
+        crate::agent_api::dispatch(host.as_ref(), &method, &params, &cancel)
     }
 
     fn finish_accepted_shutdown(&self) {

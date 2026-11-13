@@ -5,7 +5,10 @@ use serde_json::{Map, Value};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 /// Current schema version of `config.json`.
-pub const CURRENT_CONFIG_VERSION: u32 = 5;
+pub const CURRENT_CONFIG_VERSION: u32 = 6;
+
+/// Grants for `sticky_note` are explicit only at this generation or newer.
+pub const STICKY_GRANT_GENERATION: u32 = 1;
 
 /// Thread-safe shared configuration handle injected into `ModuleContext`.
 pub type SharedConfig = Arc<RwLock<AppConfig>>;
@@ -186,6 +189,10 @@ pub struct ModulesConfig {
     /// Explicit Agent grants. A missing key is false. Unsupported IDs never become allowed.
     #[serde(default)]
     pub agent_access: HashMap<String, bool>,
+    /// Support-list generation. Missing or 0 means `sticky_note: true` was stored before notes
+    /// were an Agent module and must not become a grant.
+    #[serde(default)]
+    pub agent_support_generation: u32,
     #[serde(flatten)]
     pub unknown_fields: Map<String, Value>,
 }
@@ -198,6 +205,7 @@ impl Default for ModulesConfig {
                 .collect(),
             settings: HashMap::new(),
             agent_access: HashMap::new(),
+            agent_support_generation: STICKY_GRANT_GENERATION,
             unknown_fields: Map::new(),
         }
     }
@@ -210,8 +218,13 @@ impl ModulesConfig {
 
     /// Stored grant for a module that actually supports Agent access.
     pub fn agent_allowed(&self, id: &str) -> bool {
-        crate::agent_access::agent_supported(id)
-            && self.agent_access.get(id).copied().unwrap_or(false)
+        if !crate::agent_access::agent_supported(id) {
+            return false;
+        }
+        if id == "sticky_note" && self.agent_support_generation < STICKY_GRANT_GENERATION {
+            return false;
+        }
+        self.agent_access.get(id).copied().unwrap_or(false)
     }
 }
 

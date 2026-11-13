@@ -132,6 +132,7 @@ import katex from 'katex';
 import 'katex/dist/katex.min.css';
 import { invokeIpc, type StickyNoteRecord } from '../api/ipc';
 import Icons from './Icons.vue';
+import { sanitizeHtml } from '../utils/safeHtml';
 import { t } from '../utils/i18n';
 import { notify } from '../utils/toast';
 
@@ -186,7 +187,7 @@ const themeOptions = [
 const renderedHtml = computed(() => {
   let content = note.value.content_md || '';
   if (!content.trim()) {
-    return `<p style="color:#6e6e73;font-style:italic">${t('sticky.window.emptyRenderedHint')}</p>`;
+    return sanitizeHtml(`<p style="color:#6e6e73;font-style:italic">${t('sticky.window.emptyRenderedHint')}</p>`);
   }
 
   // 1. 优先渲染块级数学公式 $$...$$
@@ -213,11 +214,12 @@ const renderedHtml = computed(() => {
     }
   });
 
-  // 3. 执行标准 Markdown 解析 (标题、待办清单、加粗等)
+  // 3. 执行标准 Markdown 解析 (标题、待办清单、加粗等)，出口统一安全清洗：
+  //    Agent 共享内容里的脚本、事件属性、javascript: URL 不得进入 v-html，同时保留 Markdown/LaTeX
   try {
-    return marked.parse(content, { breaks: true, gfm: true }) as string;
+    return sanitizeHtml(marked.parse(content, { breaks: true, gfm: true }) as string);
   } catch {
-    return content;
+    return sanitizeHtml(content);
   }
 });
 
@@ -251,13 +253,17 @@ function startWriteSession(noteId: string) {
   sessionNoteId = noteId;
   sessionPending = true;
   writeSessionId = null;
+  const epoch = ++sessionEpoch;
   sessionReady = invokeIpc<{ session_id?: number }>('sticky_begin_session', { id: noteId })
     .then((res) => {
       const sessionId = Number(res?.session_id);
       if (!Number.isFinite(sessionId) || sessionId <= 0) {
         throw new Error('便笺写入会话无效');
       }
-      writeSessionId = sessionId;
+      // Agent apply 下发的新会话优先：迟到的 begin_session 结果不得覆盖
+      if (sessionEpoch === epoch) {
+        writeSessionId = sessionId;
+      }
     })
     .finally(() => {
       sessionPending = false;
@@ -355,6 +361,7 @@ function persistContent() {
       content: note.value.content_md,
     };
     const writeSeq = ++nextContentSeq;
+    const usedSession = writeSessionId;
     contentDirty = false;
     try {
       const saved = await invokeIpc<StickyNoteRecord & { applied?: boolean }>('sticky_save_content', withSession({
@@ -363,7 +370,14 @@ function persistContent() {
         content_md: snapshot.content,
         write_seq: writeSeq,
       }));
-      assertApplied(saved);
+      if (saved?.applied === false) {
+        // 旧 autosave 会话失效（如 Agent 更新已换发会话）：放弃旧会话、保留草稿，下一次保存前重新握手
+        if (sessionRequired && usedSession != null && writeSessionId === usedSession) {
+          writeSessionId = null;
+          void startWriteSession(sessionNoteId || note.value.id);
+        }
+        throw new Error('便笺写入已被拒绝');
+      }
       const localMoved = note.value.title !== snapshot.title || note.value.content_md !== snapshot.content;
       const storedMoved = !!saved
         && (saved.title !== snapshot.title || saved.content_md !== snapshot.content);
@@ -577,7 +591,7 @@ function cancelShutdownFlush(requestId: number) {
   cancelledFlushRequests.add(requestId);
   if (shutdownFlushRequestId !== requestId) return;
   shutdownFlushRequestId = null;
-  frozen.value = false;
+  if (!agentCycle) frozen.value = false;
 }
 
 /**
@@ -608,11 +622,208 @@ function handleContentClick(e: MouseEvent) {
   }
 }
 
+/* ==================== A3 Agent UI 握手（原窗口协同，绝不另建编辑器） ==================== */
+/** 无 release 的握手周期只冻结到看门狗超时（有界恢复），超时后迟到的 apply 不再提交、草稿保留 */
+const AGENT_PREPARE_WATCHDOG_MS = 2500;
+const AGENT_APPLY_WATCHDOG_MS = 6000;
+
+let agentSessionId: string | null = null;
+let agentNoteId = '';
+let agentHandshakeDead = false;
+let unlistenAgentCommand: (() => void) | undefined;
+/** 握手命令按到达顺序串行处理，避免冻结/冲刷互相交错 */
+let agentCommandTail: Promise<void> = Promise.resolve();
+const agentBuffer: Array<{ payload: Record<string, unknown>; resolve: () => void }> = [];
+/** 每个 request_id 只允许一次完成回复；迟到/重复回复不重复提交 */
+const handledAgentRequests = new Set<string>();
+/** 当前打开的握手周期（prepare 冻结后等待 apply/release） */
+let agentCycle: { prepareId: string; applied: boolean } | null = null;
+let agentWatchdogTimer: any = null;
+/** 会话代次：防止迟到的 sticky_begin_session 结果覆盖 Agent 下发的新 write_session_id */
+let sessionEpoch = 0;
+
+function armAgentWatchdog(ms: number) {
+  clearTimeout(agentWatchdogTimer);
+  agentWatchdogTimer = setTimeout(() => {
+    agentWatchdogTimer = null;
+    // 有界恢复：超时后解冻，之后迟到的 apply 不再提交，用户草稿保留
+    closeAgentCycle();
+  }, ms);
+}
+
+function closeAgentCycle() {
+  clearTimeout(agentWatchdogTimer);
+  agentWatchdogTimer = null;
+  agentCycle = null;
+  if (shutdownFlushRequestId == null && !closing) {
+    frozen.value = false;
+  }
+}
+
+function adoptAgentWriteSession(sessionId: number) {
+  sessionEpoch += 1;
+  sessionRequired = true;
+  sessionNoteId = note.value.id || sessionNoteId;
+  sessionPending = false;
+  writeSessionId = sessionId;
+}
+
+async function reportAgentResult(
+  kind: 'notes' | 'ink',
+  payload: { request_id: string; session_id: string; operation: string },
+  ok: boolean,
+  result: Record<string, unknown>,
+  error?: 'BUSY' | 'CONFLICT',
+) {
+  // A3 契约：result 键位精确；error 仅允许 BUSY/CONFLICT；错误文本不回传原始内容
+  const args: Record<string, unknown> = {
+    kind,
+    request_id: payload.request_id,
+    session_id: payload.session_id,
+    operation: payload.operation,
+    ok,
+    result,
+  };
+  if (error) args.error = error;
+  try {
+    await invokeIpc('toolbox_agent_ui_result', args);
+  } catch (err) {
+    console.error('回传 Agent UI 结果失败:', err);
+  }
+}
+
+async function registerAgentSession(noteId: string) {
+  agentNoteId = noteId;
+  try {
+    // 契约：args 精确为 {kind, note_id}，会话由原生按实际窗口绑定
+    const res = await invokeIpc<{ session_id?: string }>('toolbox_agent_ui_ready', { kind: 'notes', note_id: noteId });
+    const sessionId = typeof res?.session_id === 'string' ? res.session_id : '';
+    if (!sessionId) throw new Error('便笺 Agent 会话无效');
+    agentSessionId = sessionId;
+    const buffered = agentBuffer.splice(0, agentBuffer.length);
+    for (const item of buffered) {
+      const run = () => processAgentCommand(item.payload).then(item.resolve, item.resolve);
+      agentCommandTail = agentCommandTail.then(run, run);
+    }
+  } catch (err) {
+    agentHandshakeDead = true;
+    const buffered = agentBuffer.splice(0, agentBuffer.length);
+    for (const item of buffered) item.resolve();
+    console.error('注册便笺 Agent 会话失败:', err);
+  }
+}
+
+function handleAgentCommand(payload: Record<string, unknown>): Promise<void> {
+  if (agentHandshakeDead) return Promise.resolve();
+  if (agentSessionId == null) {
+    if (agentBuffer.length >= 8) return Promise.resolve();
+    return new Promise((resolve) => {
+      agentBuffer.push({ payload, resolve });
+    });
+  }
+  const run = () => processAgentCommand(payload);
+  const next = agentCommandTail.then(run, run);
+  agentCommandTail = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+async function processAgentCommand(payload: Record<string, unknown>) {
+  const requestId = typeof payload.request_id === 'string' ? payload.request_id : '';
+  const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+  const operation = typeof payload.operation === 'string' ? payload.operation : '';
+  const noteId = typeof payload.note_id === 'string' ? payload.note_id : '';
+  if (!requestId || !sessionId || !operation) return;
+  // 异会话（旧实例/重注册前的迟到请求）不认领：原生换会话时已作废其等待
+  if (agentSessionId == null || sessionId !== agentSessionId) return;
+  if (handledAgentRequests.has(requestId)) return;
+
+  const ack = (ok: boolean, result: Record<string, unknown> = {}, error?: 'BUSY' | 'CONFLICT') => {
+    handledAgentRequests.add(requestId);
+    void reportAgentResult('notes', { request_id: requestId, session_id: sessionId, operation }, ok, result, error);
+  };
+
+  if (noteId !== agentNoteId) {
+    ack(false);
+    return;
+  }
+
+  if (operation === 'prepare') {
+    // 关闭中/停用冲刷中不接新握手；上一周期未释放不叠加冻结
+    if (closing || (frozen.value && shutdownFlushRequestId != null) || agentCycle) {
+      ack(false, {}, 'BUSY');
+      return;
+    }
+    frozen.value = true;
+    showPalette.value = false;
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+    try {
+      // 非关闭地冲刷草稿：等未完成写入并把脏编辑落库，窗口保持打开
+      await flushDirtyState();
+    } catch (err) {
+      closeAgentCycle();
+      const conflict = String((err as Error)?.message || err).includes('已被拒绝');
+      ack(false, {}, conflict ? 'CONFLICT' : undefined);
+      return;
+    }
+    agentCycle = { prepareId: requestId, applied: false };
+    armAgentWatchdog(AGENT_PREPARE_WATCHDOG_MS);
+    ack(true);
+    return;
+  }
+
+  if (operation === 'apply') {
+    const cycle = agentCycle;
+    const record = (payload.record ?? null) as Record<string, unknown> | null;
+    const writeSession = Number(payload.write_session_id);
+    const title = typeof record?.title === 'string' ? record.title : null;
+    const content = typeof record?.content_md === 'string' ? record.content_md : null;
+    const updatedAt = Number(record?.updated_at);
+    const recordId = typeof record?.id === 'string' ? record.id : null;
+    const valid = !!cycle
+      && !cycle.applied
+      && recordId === agentNoteId
+      && title !== null
+      && content !== null
+      && Number.isFinite(updatedAt)
+      && Number.isFinite(writeSession)
+      && writeSession > 0;
+    if (!valid || !cycle || title === null || content === null) {
+      // 迟到/重复/畸形 apply：不覆盖草稿、不提交
+      ack(false);
+      return;
+    }
+    // 已提交内容同步进原窗口；adopt 新 write_session_id 使旧 autosave 失效
+    note.value.title = title;
+    note.value.content_md = content;
+    note.value.updated_at = updatedAt;
+    if (typeof record?.is_open === 'boolean') note.value.is_open = record.is_open;
+    adoptAgentWriteSession(writeSession);
+    contentDirty = false;
+    cycle.applied = true;
+    armAgentWatchdog(AGENT_APPLY_WATCHDOG_MS);
+    ack(true);
+    return;
+  }
+
+  if (operation === 'release') {
+    // release 从不重放记录；成功/失败/取消/超时一律解冻
+    closeAgentCycle();
+    ack(true);
+    return;
+  }
+
+  ack(false);
+}
+
 if (typeof onUnmounted === 'function') {
   onUnmounted(() => {
     unlistenFlush?.();
     unlistenFlushSave?.();
     unlistenFlushCancel?.();
+    unlistenAgentCommand?.();
+    clearTimeout(agentWatchdogTimer);
+    agentWatchdogTimer = null;
   });
 }
 
@@ -664,11 +875,22 @@ onMounted(async () => {
           }
         },
       );
+      unlistenAgentCommand = await eventApi.listen(
+        'sticky://agent-command',
+        (event: { payload?: Record<string, unknown> }) => {
+          const payload = event?.payload;
+          if (payload && typeof payload === 'object') {
+            return handleAgentCommand(payload);
+          }
+          return undefined;
+        },
+      );
     } catch (err) {
       console.error('订阅便笺关闭保存失败:', err);
     }
   }
   if (!targetId) return;
+  await registerAgentSession(targetId);
   try {
     await sessionReady;
   } catch (err) {

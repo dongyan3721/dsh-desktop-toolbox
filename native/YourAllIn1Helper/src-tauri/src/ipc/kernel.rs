@@ -268,14 +268,22 @@ mod agent_access_ipc_tests {
         assert_eq!(entry(&catalog, "clipboard")["agent_supported"], true);
         assert_eq!(entry(&catalog, "clipboard")["agent_allowed"], false);
         assert_eq!(entry(&catalog, "clipboard")["agent_effective"], false);
-        assert_eq!(entry(&catalog, "sticky_note")["agent_supported"], false);
+        assert_eq!(entry(&catalog, "sticky_note")["agent_supported"], true);
+        assert_eq!(entry(&catalog, "sticky_note")["agent_allowed"], false);
         assert_eq!(entry(&catalog, "media_proc")["agent_supported"], false);
 
         let forged = host.invoke_ipc(
             "kernel_set_agent_access",
-            json!({"module_id": "sticky_note", "allowed": true}),
+            json!({"module_id": "media_proc", "allowed": true}),
         );
         assert!(!forged.ok);
+        let notes = host.invoke_ipc(
+            "kernel_set_agent_access",
+            json!({"module_id": "sticky_note", "allowed": true}),
+        );
+        assert!(notes.ok);
+        assert_eq!(entry(&notes.data.unwrap(), "sticky_note")["agent_allowed"], true);
+        host.kernel().set_agent_access("sticky_note", false).unwrap();
         let actor = host.invoke_ipc(
             "kernel_set_agent_access",
             json!({"module_id": "clipboard", "allowed": true, "actor": "human"}),

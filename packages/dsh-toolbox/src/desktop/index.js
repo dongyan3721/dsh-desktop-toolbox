@@ -3,6 +3,9 @@ import Schema from '@deepseek-ai/schemastery';
 import { mkdir } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { NativeOwner, hostError } from '../host/native-owner.js';
+import { DesktopAgentAccess } from './agent-access.js';
+import { ToolboxArtifactService } from './artifacts.js';
+import { resolveDesktopDataDir } from './data-dir.js';
 
 export const DESKTOP_RUNTIME = Object.freeze({
   executable: 'win32-x64/all-in-one-desktop.exe',
@@ -17,7 +20,7 @@ export const DESKTOP_RUNTIME = Object.freeze({
 export const name = 'toolbox-desktop-runtime';
 export const inject = ['subprocess'];
 export const Config = Schema.object({
-  dataDir: Schema.string().required(),
+  dataDir: Schema.string().default(''),
   nativeExecutable: Schema.string().default(''),
   startupTimeoutMs: Schema.number().default(20000),
   requestTimeoutMs: Schema.number().default(5000),
@@ -29,12 +32,12 @@ const MODULES = new Set(['screenshot', 'clipboard', 'screen_ink', 'media_proc', 
 const REQUIRED_METHODS = ['status', 'desktop.show_main', 'desktop.open_panel', 'desktop.shutdown'];
 
 function normalizeConfig(config) {
-  if (!isAbsolute(config.dataDir)) throw hostError('INVALID_CONFIG', 'Desktop dataDir must be absolute');
+  const dataDir = resolveDesktopDataDir(config.dataDir);
   for (const field of ['startupTimeoutMs', 'requestTimeoutMs', 'cancelTimeoutMs', 'shutdownTimeoutMs']) {
     if (!Number.isSafeInteger(config[field]) || config[field] < 1 || config[field] > 2147483647) throw hostError('INVALID_CONFIG', `${field} must be a timer-safe positive integer`);
   }
   if (config.nativeExecutable && !isAbsolute(config.nativeExecutable)) throw hostError('INVALID_CONFIG', 'Desktop executable override must be absolute');
-  return { ...config, tempDir: join(config.dataDir, '.tmp'), readRoots: [], writeRoots: [] };
+  return { ...config, dataDir, tempDir: join(dataDir, '.tmp'), readRoots: [], writeRoots: [] };
 }
 
 /** Human runtime service; deliberately has no tools/Agent dependency or registration. */
@@ -45,9 +48,11 @@ export class ToolboxDesktopService extends Service {
     this.createOwner = ownerFactory ?? (() => new NativeOwner(ctx.subprocess, this.config, DESKTOP_RUNTIME));
     this.phase = 'starting';
     this.stopping = false;
+    this.agentAccess = new DesktopAgentAccess(this);
     ctx.effect(() => async () => {
       this.stopping = true;
       this.phase = 'stopping';
+      this.agentAccess.dispose();
       await this.launchTask?.catch(() => {});
       await this.owner?.close();
     });
@@ -75,6 +80,7 @@ export class ToolboxDesktopService extends Service {
     owner.onUnavailable(() => {
       if (this.owner !== owner || this.stopping) return;
       this.phase = 'unavailable';
+      this.agentAccess.invalidate();
       this.previousExited = true;
       // Only a later explicit user action starts a replacement. Never replay
       // the previous control request after an uncertain transport outcome.
@@ -119,9 +125,14 @@ export class ToolboxDesktopService extends Service {
     if (result?.opened !== true) throw hostError('DESKTOP_PROTOCOL', 'The runtime did not acknowledge opening its panel');
     return { opened: true };
   }
+
+  getAgentAccess(options) { return this.agentAccess.get(options); }
+  agentCall(method, params, options) { return this.agentAccess.call(method, params, options); }
+  onAgentAccessChanged(listener) { return this.agentAccess.onChanged(listener); }
 }
 
 export async function apply(ctx, config) {
   const service = new ToolboxDesktopService(ctx, config);
   await service.start();
+  new ToolboxArtifactService(ctx, service);
 }

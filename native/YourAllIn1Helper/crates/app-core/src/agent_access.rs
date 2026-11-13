@@ -8,6 +8,7 @@ pub const AGENT_SUPPORTED_MODULES: &[&str] = &[
     "clipboard",
     "screen_ink",
     "app_usage",
+    "sticky_note",
 ];
 
 pub fn agent_supported(module_id: &str) -> bool {

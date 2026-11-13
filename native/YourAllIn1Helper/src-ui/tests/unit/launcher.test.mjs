@@ -8,6 +8,15 @@ const source = await readFile(new URL('../../src/utils/features.ts', import.meta
 function compile(source, context) {
   vm.runInContext(ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
 }
+
+test('original feature windows can receive native completion and kernel events without file or system permissions', async () => {
+  const capability = JSON.parse(await readFile(new URL('../../../src-tauri/capabilities/feature-panel-events.json', import.meta.url), 'utf8'));
+  const context = vm.createContext({});
+  compile(source.replace(/export /g, ''), context);
+  const modules = vm.runInContext('FEATURES.map(feature => feature.module)', context);
+  for (const id of modules) assert.ok(capability.windows.includes(`feature-${id}`), `${id} needs its native event channel`);
+  assert.deepEqual(capability.permissions.toSorted(), ['core:event:allow-listen', 'core:event:allow-unlisten']);
+});
 test('shortcut recorder uses physical letter keys and rejects IME, repeats, modifiers and bare typing', () => {
   const context = vm.createContext({});
   compile(source.replace(/export /g, ''), context);
