@@ -12,18 +12,23 @@ use all_in_one_host::DesktopHost;
 mod smoke;
 
 fn main() -> anyhow::Result<()> {
-    if env::args().any(|arg| arg == "--smoke-test") {
-        let data_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."))
-            .join(".runtime_data")
-            .join("smoke_test");
-        let host = Arc::new(DesktopHost::bootstrap(data_dir, true)?);
-        host.seed_demo_data_if_empty()?;
-        smoke::run_cli_smoke_test(&host)?;
-        return Ok(());
+    let args: Vec<String> = env::args().skip(1).collect();
+    match all_in_one_host::parse_startup_mode(&args).map_err(anyhow::Error::msg)? {
+        all_in_one_host::StartupMode::Smoke => {
+            let data_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."))
+                .join(".runtime_data")
+                .join("smoke_test");
+            let host = Arc::new(DesktopHost::bootstrap(data_dir, true)?);
+            host.seed_demo_data_if_empty()?;
+            smoke::run_cli_smoke_test(&host)?;
+            Ok(())
+        }
+        all_in_one_host::StartupMode::Standalone => {
+            all_in_one_host::run();
+            Ok(())
+        }
+        all_in_one_host::StartupMode::Plugin(launch) => all_in_one_host::run_plugin(launch),
     }
-
-    all_in_one_host::run();
-    Ok(())
 }

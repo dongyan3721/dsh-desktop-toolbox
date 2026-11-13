@@ -36,6 +36,9 @@ use std::{
 };
 
 mod clipboard_window;
+mod desktop_control;
+mod plugin_host;
+mod plugin_launch;
 mod demo;
 mod exit_coordinator;
 mod ink_window;
@@ -62,6 +65,8 @@ mod user_manual;
 mod updates;
 pub use legacy_http::serve_desktop_ui;
 pub use native_save_dialog::{SaveKind, SavePathRegistry};
+pub use plugin_host::run_plugin;
+pub use plugin_launch::{parse_startup_mode, PluginLaunch, StartupMode};
 pub use tauri_app::run;
 
 /// Request payload sent to `POST /api/ipc` or `DesktopHost::invoke_ipc`.
