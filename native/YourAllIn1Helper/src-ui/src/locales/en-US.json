@@ -82,6 +82,18 @@
     "btnProcessing": "Working…",
     "btnDisable": "Disable",
     "btnEnable": "Enable",
+    "enableFeature": "Enable Feature",
+    "allowAgent": "Allow Agent Access",
+    "agentSwitchAria": "Agent access grant switch for {name}",
+    "agentUnsupported": "Agent access unsupported",
+    "agentIneffectiveNotice": "Module disabled; Agent access temporarily ineffective",
+    "agentScopeTitle": "Shared Scope",
+    "agentScope": {
+      "screenshot": "Enumerate displays, capture monitor regions, and generate image artifacts",
+      "clipboard": "Bounded query, read text history, and write plain text to clipboard",
+      "screen_ink": "Inspect canvas state, draw strokes, clear, and capture snapshot on the shared canvas",
+      "app_usage": "Inspect usage status, date range overview, app and hourly breakdown"
+    },
     "names": {
       "screenshot": "Enhanced Screenshot & Pin",
       "clipboard": "Clipboard Manager",
