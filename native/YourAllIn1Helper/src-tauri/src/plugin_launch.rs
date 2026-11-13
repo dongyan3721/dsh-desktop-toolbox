@@ -30,11 +30,11 @@ pub const AGENT_DATA_METHODS: &[&str] = &[
 ];
 
 pub const DESKTOP_CAPABILITIES: &[&str] = &[
-    "desktop.console",
     "status",
     "desktop.show_main",
     "desktop.open_panel",
     "desktop.shutdown",
+    "desktop.console",
     "agent.get_access",
     "agent.screenshot.monitors",
     "agent.screenshot.capture",
