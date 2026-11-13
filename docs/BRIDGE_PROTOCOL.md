@@ -1,5 +1,7 @@
 # Toolbox bridge v1 — first-wave contract
 
+Current desktop addendum (beta.5, 2026-11-14): the original desktop runtime advertises `desktop.console` for its private verified parent connection, with closed human-only `{action,args}` validated in Host and native code. This is separate from the Agent method whitelist; Agent calls cannot use it to change grants. The Harness browser-owner Connection carries the human UI request. Snapshot omits private content/full config; background reads do not restart an exited runtime, and explicit `reconnect` is handled by Host before requesting snapshot. Current settings, supported actions and acceptance evidence are in `BETA5_ACCEPTANCE.zh-CN.md`; first-wave headless examples below are historical fixtures, not current product exports.
+
 This contract is owned by Codex. Implementations may request corrections in their handoff; do not change it independently.
 
 ## Transport and ownership

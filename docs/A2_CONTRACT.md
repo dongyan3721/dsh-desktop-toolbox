@@ -1,5 +1,7 @@
 # A2 shared contract: human enablement and Agent grants
 
+Beta.5 human-console addendum (2026-11-14): embedding the original console also permits the authenticated Harness browser-owner Connection to change the same human settings. The private parent-owned desktop pipe now accepts the closed `desktop.console` command; this extends the earlier Tauri-only human path below. Host and native both validate the fixed actions/arguments, and Connection rejects non-owner principals. `agentCall` never accepts `desktop.console` or permission setters. Snapshot returns only target_os, module_catalog and general language/theme; no generic IPC, full config or private content. See `BETA5_ACCEPTANCE.zh-CN.md` for actions, cancellation/lifecycle behavior and tests.
+
 Owner: Codex. Date: 2026-11-13. Latest revision adds sticky_note as the fifth supported module. Existing A2 deliveries implement only the earlier four-module list; see `A2_NEXT_PHASE.zh-CN.md` for review evidence and remaining work. H1 lifecycle, ownership, framing, identity and keyboard contracts remain in force. Implementations may not claim unimplemented operations.
 
 ## Policy and UI

@@ -2,11 +2,11 @@
 
 将 `C:\Users\xcxix\PyCharmProjects\YourAllIn1Helper` 迁移为 DeepSeek Harness 插件。
 
-2026-11-14：`0.1.0-beta.5` 集成候选增加 Harness 内嵌原 Vue 主控台、快捷键诊断详情、Windows 剪贴板来源，并将旧便笺工具迁到测试 fixture。开发范围见 [beta.5 计划](docs/BETA5_FEEDBACK_PLAN.zh-CN.md)；构建、打包和真实界面验收由 Codex 集成完成后记录，历史包/tag 不覆盖。
+2026-11-14：`0.1.0-beta.5` 已完成本轮集成和受控验收：Harness 内嵌原 Vue 主控台、快捷键诊断详情、Windows 剪贴板来源、旧便笺工具迁出生产包。519 项回归通过，并在已安装 DSH `0.2.2-rc.3` 完成界面、真实热键/剪贴板及退出清理验收；两个包在 `dist/`。范围、哈希与未测项见 [beta.5 验收记录](docs/BETA5_ACCEPTANCE.zh-CN.md)，历史包/tag 保留。
 
 2026-11-14：新增 `0.1.0-beta.4`。桌面组件在未配置 `DSH_HOME` 时使用 `%USERPROFILE%\.dsh\toolbox-desktop-data`。原生程序沿用 beta.3，依赖声明仍接受 DSH `0.2.2-rc.1` 与 `0.2.2-rc.3`。详见 [beta.4 记录](docs/BETA4_DESKTOP_DATA_DIR.zh-CN.md)。此前 [beta.3](docs/BETA3_DSH_RC3_DECLARATIONS.zh-CN.md) 只放宽了安装声明。
 
-产品主线是**供人日常使用的工具箱**：保留原界面、窗口、托盘与快捷键。当前 `0.1.0-beta.2` 已完成 A3 集成和本机受控验收；五项支持 Agent 的模块为截图、剪贴板、屏幕注释、应用使用时长、便笺，功能启停与 Agent 授权独立，新授权默认关闭。其他五项只供人使用。
+产品主线是**供人日常使用的工具箱**：保留原界面、窗口、托盘与快捷键。首个功能验收基线 `0.1.0-beta.2` 已完成 A3 集成和本机受控验收；五项支持 Agent 的模块为截图、剪贴板、屏幕注释、应用使用时长、便笺，功能启停与 Agent 授权独立，新授权默认关闭。其他五项只供人使用。
 
 两个安装包位于 `dist/`，已登录隔离 Electron 预览沿用原 D 盘数据。实际测试、发布哈希与明确未测项见 [beta 1 验收记录](docs/BETA1_ACCEPTANCE.zh-CN.md)。密码本/系统认证、外部翻译服务、个人旧数据导入与多显示器兼容不列为本次全部通过。
 
