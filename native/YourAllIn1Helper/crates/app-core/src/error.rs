@@ -50,6 +50,15 @@ pub enum CoreError {
     #[error("Module '{0}' is disabled")]
     ModuleDisabled(String),
 
+    #[error("Agent access is unsupported for '{0}'")]
+    AgentUnsupported(String),
+
+    #[error("Agent access is denied for '{0}'")]
+    AgentAccessDenied(String),
+
+    #[error("Agent module '{0}' is unavailable")]
+    AgentUnavailable(String),
+
     #[error("Module '{module_id}' lifecycle hook '{hook}' failed: {reason}")]
     ModuleLifecycle {
         module_id: String,

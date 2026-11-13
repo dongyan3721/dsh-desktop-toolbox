@@ -82,6 +82,18 @@
     "btnProcessing": "处理中…",
     "btnDisable": "关闭",
     "btnEnable": "开启",
+    "enableFeature": "开启功能",
+    "allowAgent": "允许 Agent 访问",
+    "agentSwitchAria": "{name} Agent 访问授权开关",
+    "agentUnsupported": "不支持 Agent",
+    "agentIneffectiveNotice": "功能未开启，Agent 访问暂不生效",
+    "agentScopeTitle": "共享范围",
+    "agentScope": {
+      "screenshot": "显示器枚举、截取指定区域与图像产物",
+      "clipboard": "历史记录有限查询、文本读取与显式写入",
+      "screen_ink": "同一画布状态、绘制涂鸦、清空与快照",
+      "app_usage": "统计状态、跨日概览、按应用与小时统计"
+    },
     "names": {
       "screenshot": "增强截图与贴图",
       "clipboard": "剪贴板管理",
