@@ -6,6 +6,8 @@ Windows x64 本地工具箱：真实状态、便笺创建/搜索/更新。图片
 发布入口是 `lib/index.js`，Bundle 为 `cordis.patch.yml`。
 本包没有安装期脚本。构建、安装与运行验收记录位于工作区 `docs/`。
 
+H1 开发中：`dsh-toolbox/desktop` 提供独立于模型工具的 `toolboxDesktop` 服务，`dsh-toolbox/human-entry` 为可见入口提供窄 RPC 适配。`human.patch.yml` 是单独的人用装配草案，需另装 `dsh-toolbox-client`。当前默认 Bundle 仍是已验证的 headless alpha.2；冻结的 alpha.2 包不包含新桌面实现。桌面构建使用工作区 `scripts/Build-Desktop.ps1`，不自动启动、安装或覆盖旧发布包。真实窗口、保存和快捷键验收完成后再切换发布默认入口。
+
 配置必须指定绝对 dataDir，Bundle 默认使用 DSH_TOOLBOX_DATA_DIR 或 DSH_HOME 下的 toolbox-data。开发/验收时请将 DSH_HOME 指向 D 盘隔离目录。原生程序默认从本包 resources 中加载并校验 SHA-256；nativeExecutable 仅供可信部署显式覆盖，不是模型工具参数。
 
 启动依赖宿主的 tools/subprocess 服务。图片额外需要同一执行世界的 fs 服务、enableImages:true、readRoots 和 writeRoots；输出必须同时满足宿主当前文件策略与原生路径检查。不会覆盖已有文件。跨进程写操作出现 OUTCOME_UNKNOWN 时应先查询实际数据，不自动重试。宿主外层也可能在原生写入已提交后报告调用被取消，取消不等于回滚；重试前应先查询结果。
