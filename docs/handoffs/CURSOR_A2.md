@@ -9,7 +9,7 @@
 ## 提交
 
 - `1f3375c` 配置版本 5、`modules.agent_access`、四项白名单、目录三个字段、人的 `kernel_set_agent_access`、每次调用的 `authorize_agent`。
-- 下一笔是同一 `DesktopHost` 上的 Agent 数据方法。控制管道、参数隔离和快捷键回归仍在 H1 提交里。
+- `f3e796b` 同一 `DesktopHost` 上的 Agent 数据方法。控制管道、参数隔离和快捷键回归仍在 H1 提交里。
 
 ## 阶段 1：目录与授权
 
