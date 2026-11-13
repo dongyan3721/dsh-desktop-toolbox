@@ -4,7 +4,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools';
 import { isAbsolute, join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { NativeOwner, hostError } from '../../packages/dsh-toolbox/lib/host/native-owner.js';
-import { createNoteTools } from '../../packages/dsh-toolbox/lib/features/notes.js';
+import { createNoteTools } from './legacy-notes-tools.mjs';
 import { createImageTools } from '../../packages/dsh-toolbox/lib/features/images.js';
 import { authorizeImagePaths } from '../../packages/dsh-toolbox/lib/host/image-policy.js';
 

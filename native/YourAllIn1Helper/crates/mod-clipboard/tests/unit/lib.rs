@@ -117,3 +117,106 @@ fn test_clipboard_image_capture_and_blob_storage() {
     let blob_path = ctx.app_data_dir.join(rec.blob_rel_path.as_ref().unwrap());
     assert!(blob_path.exists());
 }
+
+#[test]
+fn test_text_and_image_source_storage_search_and_duplicate_semantics() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let mock_hal = MockOsHal::new();
+    let clip_mod = ClipboardModule::new(Arc::new(mock_hal.clone()));
+
+    let kernel = AppKernelBuilder::new(temp_dir.path())
+        .with_in_memory_db(true)
+        .with_target_os(TargetOs::MacOs)
+        .register_module(ClipboardModule::new(Arc::new(mock_hal.clone())))
+        .unwrap()
+        .bootstrap()
+        .unwrap();
+    let ctx = kernel.context();
+
+    let text = clip_mod
+        .capture_text(ctx, "Source-aware text", Some("Code"))
+        .unwrap()
+        .expect("text item");
+    assert_eq!(text.source_app_name.as_deref(), Some("Code"));
+    assert_eq!(
+        clip_mod.list_items(ctx, Some("Code"), 20).unwrap().len(),
+        1,
+        "source search must find the text item"
+    );
+    assert_eq!(
+        clip_mod.list_items(ctx, Some("Source-aware"), 20).unwrap().len(),
+        1,
+        "content search must still work"
+    );
+
+    // 同一内容再次复制：已知新来源更新来源；未知来源保留已有来源。
+    let text_again = clip_mod
+        .capture_text(ctx, "Source-aware text", Some("Browser"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(text_again.id, text.id);
+    assert_eq!(text_again.source_app_name.as_deref(), Some("Browser"));
+    let text_unknown = clip_mod
+        .capture_text(ctx, "Source-aware text", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(text_unknown.id, text.id);
+    assert_eq!(text_unknown.source_app_name.as_deref(), Some("Browser"));
+
+    let unknown_only = clip_mod
+        .capture_text(ctx, "Unknown source text", None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(unknown_only.source_app_name, None);
+
+    let width = 4u32;
+    let height = 4u32;
+    let mut pixels = Vec::new();
+    for _ in 0..(width * height) {
+        pixels.extend_from_slice(&[0, 128, 255, 255]);
+    }
+    let image = clip_mod
+        .capture_image_rgba(ctx, width, height, &pixels, Some("ScreenshotApp"))
+        .unwrap()
+        .expect("image item");
+    assert_eq!(image.source_app_name.as_deref(), Some("ScreenshotApp"));
+    assert_eq!(
+        clip_mod.list_items(ctx, Some("ScreenshotApp"), 20).unwrap().len(),
+        1,
+        "source search must find the image item"
+    );
+    let image_unknown = clip_mod
+        .capture_image_rgba(ctx, width, height, &pixels, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(image_unknown.id, image.id);
+    assert_eq!(image_unknown.source_app_name.as_deref(), Some("ScreenshotApp"));
+
+    // 停用和屏蔽租约继续拒绝新采集，且不影响已存条目来源。
+    kernel
+        .update_config(|cfg| cfg.clipboard.enabled = false)
+        .unwrap();
+    assert!(clip_mod
+        .capture_text(ctx, "Disabled text", Some("Code"))
+        .unwrap()
+        .is_none());
+    assert!(clip_mod
+        .capture_image_rgba(ctx, width, height, &pixels, Some("ScreenshotApp"))
+        .unwrap()
+        .is_none());
+    kernel
+        .update_config(|cfg| cfg.clipboard.enabled = true)
+        .unwrap();
+
+    ctx.event_bus
+        .set_clipboard_suppression(true, "password_vault_secret");
+    assert!(clip_mod
+        .capture_text(ctx, "Suppressed text", Some("Code"))
+        .unwrap()
+        .is_none());
+    assert!(clip_mod
+        .capture_image_rgba(ctx, width, height, &pixels, Some("ScreenshotApp"))
+        .unwrap()
+        .is_none());
+    ctx.event_bus.set_clipboard_suppression(false, "done");
+}

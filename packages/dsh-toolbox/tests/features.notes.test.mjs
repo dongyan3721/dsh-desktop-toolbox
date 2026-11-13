@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools'
-import { createNoteTools } from '../src/features/notes.js'
+// Historical headless protocol regression; not a production entry point.
+import { createNoteTools } from '../../../tests/fixtures/legacy-notes-tools.mjs'
 
 function noteRecord(overrides = {}) {
   return {
@@ -509,4 +511,8 @@ test('note renderers are pure and do not call the bridge', () => {
   assert.equal(searched[0].text.includes('# 议程'), false)
   assert.match(updated[0].text, /已更新便笺/)
   assert.equal(bridge.calls.length, 0)
+})
+
+test('legacy notes factory is a test-only fixture, not production source', () => {
+  assert.equal(existsSync(new URL('../src/features/notes.js', import.meta.url)), false)
 })
