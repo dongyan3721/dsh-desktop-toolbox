@@ -1,4 +1,4 @@
-# Antigravity H0/H1 交接文档：原 Vue 功能/偏好界面与对等清单
+# Antigravity H0/H1 交接文档：原 Vue 功能/偏好界面与对等清单 (修订版)
 
 ## 1. 基础信息
 
@@ -13,86 +13,78 @@
 
 ---
 
-## 2. 完成工作与验证结论
+## 2. 完成工作与审计结论
 
 ### 2.1 依赖安装与独立性
 - 严格遵循只在嵌套工作树 `native/YourAllIn1Helper/src-ui` 下安装前端依赖，严禁触碰根目录只读 SDK。
-- 执行命令：
+- 依赖安装使用工作树根绝对路径点源环境脚本：
   ```powershell
   Set-Location -LiteralPath 'D:\Code\dsh-toolbox\.worktrees\antigravity\native\YourAllIn1Helper\src-ui'
-  . ..\..\..\scripts\Use-ProjectEnvironment.ps1
+  . 'D:\Code\dsh-toolbox\.worktrees\antigravity\scripts\Use-ProjectEnvironment.ps1'
   pnpm install --frozen-lockfile --ignore-workspace
   ```
-- 结果：通过 D 盘缓存直接复用 61 个离线依赖包，7.3 秒完成，未向外网发送不必要下载，未改动根配置。
+- 结果：通过 D 盘离线缓存直接复用依赖包（7.3 秒完成），未向外网发送不必要下载，未改动根配置。
 
 ### 2.2 现有界面与代码审计结论
-- **代码无需修改，直接复用**：
-  - 经全面审查 `App.vue`、`Dashboard.vue`、`PreferencesPanel.vue`、`FeaturePanel.vue`、`StickyNote.vue` 及工具函数，所有组件均使用标准 Tauri 2.x `invoke` 和 `event.listen` 接口通信，不存在特定旧环境假设。
-  - 快捷键录入框（`PreferencesPanel.vue`）已完备实现：物理键提取、输入法/修饰键/长按重复拦截、`Tab` 键保留导航、`Escape` 键放弃录制、冲突预检（`kernel_check_shortcut`）与阻断、恢复默认与清除（`null`）。
-  - 便笺面板（`StickyNote.vue`）已完备实现：多颜色主题、透明度无极调节、置顶状态绑定、400ms 存盘防抖、关停前强制冲刷（`sticky://flush_save` 握手）及 Markdown 格式化导出。
-  - 窗口路由（`App.vue`）支持通过 `?window=<type>&mode=native&id=<id>` 动态挂载全部 10 个独立功能视图或主控制台。
-  - 严格不添加任何伪造 HTTP 回退或 Agent 暴露接口，原 UI 零破坏。
+- **代码无需强行修改，保持原汁原味与高内聚**：
+  - 经全面审查 `App.vue`、`Dashboard.vue`、`PreferencesPanel.vue`、`FeaturePanel.vue`、`StickyNote.vue` 及各组件源码，所有组件均使用标准 Tauri 2.x `invoke` 和 `event.listen` 通信，生命周期钩子规范完整，无旧环境硬编码假设。
+  - **快捷键录入框 (`PreferencesPanel.vue`)**：已完备实现物理按键提取、输入法合成态 (`isComposing`) 屏蔽、修饰键与按键连发 (`repeat`) 过滤、`Tab` 键保留原生焦点导航、`Escape` 键放弃录制、冲突预检 (`kernel_check_shortcut`) 拦截阻断、恢复默认与清除 (`null`)。
+  - **便笺面板 (`StickyNote.vue`)**：已完备实现便笺主题、透明度无极滑动、置顶窗口绑定、400ms 存盘防抖、关停前冲刷 (`sticky://flush-save` 配合 `sticky_flush_result`) 及 Markdown 导出。
+  - **窗口路由 (`App.vue`)**：通过 `?window=<type>&mode=native&id=<id>` 动态挂载全部 10 个独立功能视图或主控制台，无需重构或额外适配。
+  - 严格不新增伪造 HTTP 回退或非必要的 Agent 暴露接口。
 
 ### 2.3 产物对等文档交付
-- 创建并交付 [docs/HUMAN_UI_PARITY.zh-CN.md](file:///D:/Code/dsh-toolbox/.worktrees/antigravity/docs/HUMAN_UI_PARITY.zh-CN.md)。
-- 详列全部 10 个模块的“原组件/路由/IPC/事件/自动化测试/真实 GUI 状态”矩阵，并清晰列出 14 个全局动作及全部局部键盘控制（Tab、Escape、方向键微调、上下键切候选、Enter 粘贴等）。
-- 严格区分三种状态：`source-present`、`automated-tested` 与 `real-GUI-unverified`（物理按键与真实窗口待 Codex 验收）。
+- 更新并纠正交付 [docs/HUMAN_UI_PARITY.zh-CN.md](file:///D:/Code/dsh-toolbox/.worktrees/antigravity/docs/HUMAN_UI_PARITY.zh-CN.md)。
+- **核心纠正与核实点**：
+  1. **修正长截图动作 ID**：核对 Rust `crates/mod-screenshot/src/lib.rs` 与前端 API，滚动长截图动作为 `screenshot:scroll`（非 `screenshot:long_capture`）。
+  2. **逐项核实 Tauri Event 命名（连字符）**：核对 `src-tauri` 与 Vue 源码，修正 `media://job-progress`、`sticky://flush-close`、`sticky://flush-save`、`sticky://flush-cancel`、`screen-ink://clear-canvas`、`screen-ink://mode-changed`、`translator://stream-chunk`、`translator://selection-ready` 等所有事件名称（全部使用连字符 `-`，非下划线 `_`）。
+  3. **架构明确为主控台 + 十大模块**：主控台（`Dashboard.vue`、`PreferencesPanel.vue`、`ModuleManager.vue`，归属于 `mod-desktop`）作为宿主管理，十个功能模块为 `01 mod-screenshot`、`02 mod-clipboard`、`03 mod-screen-ink`、`04 mod-sticky-note`、`05 mod-translator`、`06 mod-password-vault`、`07 mod-media-proc`、`08 mod-script-runner`、`09 mod-window-pin`、`10 mod-app-usage`。
+  4. **诚实验证测试覆盖范围**：
+     - `launcher.test.mjs`（9 测）：仅测试快捷键录制格式/偏好防抖/冲突预检，以及窗口置顶候选列表属性合并 Fake。绝不宣称动态脚本热键或底层置顶已测。
+     - `mod-script-runner` 与 `mod-media-proc`：在前端无直接单测文件（标注为“无直接前端单测”，底层逻辑由 Rust 后端覆盖）。
+     - `mod-window-pin`：仅在 `launcher.test.mjs` 有 1 项候选列表属性合并单测，拾取与底层置顶无直接前端单测。
+  5. **密码本安全边界**：密码本涉及 Master Password 主密码设置/解锁、Windows Hello / 生体认证、密码复制与查看，按安全与规范严格标记为**用户本人手工操作验收 (Human Manual Acceptance Only)**，绝不委托给任何 AI Agent 自动化执行。
 
 ---
 
-## 3. 测试命令与确切输出
+## 3. 命令执行记录
 
-在 `native/YourAllIn1Helper/src-ui` 目录下执行：
+### 3.1 本轮确实执行的命令与结果 (Commands Actually Executed in This Session)
 
-### 3.1 前端单元测试 (103 测全部通过)
+1. **依赖独立安装**：
+   ```powershell
+   Set-Location -LiteralPath 'D:\Code\dsh-toolbox\.worktrees\antigravity\native\YourAllIn1Helper\src-ui'
+   . 'D:\Code\dsh-toolbox\.worktrees\antigravity\scripts\Use-ProjectEnvironment.ps1'
+   pnpm install --frozen-lockfile --ignore-workspace
+   ```
+   *结果*：61 个包离线安装，0 漏洞，耗时 7.3s。
+
+2. **前端无头单元测试**：
+   ```powershell
+   Set-Location -LiteralPath 'D:\Code\dsh-toolbox\.worktrees\antigravity\native\YourAllIn1Helper\src-ui'
+   pnpm test
+   ```
+   *结果*：11 个测试套件，共 103 项前端单元测试全部通过（103 pass, 0 fail, 耗时 4.4s）。
+
+3. **前端类型检查与生产构建**：
+   ```powershell
+   Set-Location -LiteralPath 'D:\Code\dsh-toolbox\.worktrees\antigravity\native\YourAllIn1Helper\src-ui'
+   pnpm build
+   ```
+   *结果*：`vue-tsc --noEmit && vite build` 成功，122 modules transformed，0 错误，0 警告。
+
+### 3.2 可复现验证命令集 (Reproducible Verification Commands)
+
 ```powershell
+# 1. 切换到工作树前端目录并加载环境
 Set-Location -LiteralPath 'D:\Code\dsh-toolbox\.worktrees\antigravity\native\YourAllIn1Helper\src-ui'
-. ..\..\..\scripts\Use-ProjectEnvironment.ps1
+. 'D:\Code\dsh-toolbox\.worktrees\antigravity\scripts\Use-ProjectEnvironment.ps1'
+
+# 2. 运行 103 项前端无头单元测试
 pnpm test
-```
-**实际结果**：
-```text
-✔ recent range is recalculated from the current local date across midnight (10.5479ms)
-✔ seven and thirty day ranges are inclusive of the current day (1.8845ms)
-✔ date helpers keep leap days and year boundaries local (1.9784ms)
-✔ hidden overlay presents after writing pixels without waiting for an animation frame (2821.6738ms)
-...
-✔ ordinary debounce saves the fictional note when its timer fires (1707.3099ms)
-✔ closing while a save is pending persists edits before destroying the WebView (641.0853ms)
-✔ shortcut recorder uses physical letter keys and rejects IME, repeats, modifiers and bare typing (1057.0382ms)
-✔ shortcut save failure preserves old binding and recorded draft; reset uses explicit null (738.2535ms)
-✔ conflict preflight blocks persistence and preserves the draft and active binding (184.4823ms)
-...
-✔ window drag handles title descendants but preserves controls and non-left clicks (5.5252ms)
-ℹ tests 103
-ℹ suites 0
-ℹ pass 103
-ℹ fail 0
-ℹ cancelled 0
-ℹ skipped 0
-ℹ todo 0
-ℹ duration_ms 10459.8753
-```
 
-### 3.2 生产构建与类型检查 (vue-tsc + vite build 0 错误)
-```powershell
+# 3. 运行类型检查与生产打包
 pnpm build
-```
-**实际结果**：
-```text
-> all-in-one-ui@0.1.3-beta build D:\Code\dsh-toolbox\.worktrees\antigravity\native\YourAllIn1Helper\src-ui
-> vue-tsc --noEmit && vite build
-
-vite v5.4.8 building for production...
-transforming...
-✓ 122 modules transformed.
-rendering chunks...
-computing gzip size...
-dist/index.html                                         0.47 kB │ gzip:  0.32 kB
-...
-dist/assets/index-CzrCLGHS.js                         208.46 kB │ gzip: 90.89 kB
-dist/assets/StickyNote-B_QFIRAt.js                    304.68 kB │ gzip: 92.79 kB
-✓ built in 14.43s
 ```
 
 ---
@@ -106,4 +98,6 @@ dist/assets/StickyNote-B_QFIRAt.js                    304.68 kB │ gzip: 92.79 
 3. **主界面导航事件**:
    - 外部调用呼出特定功能或偏好设置时，可向主界面发射 `'dashboard://navigate'`，载荷为目标路由字符串（如 `'preferences'`）。
 4. **便笺退出前冲刷握手**:
-   - 关停便笺或原生宿主退出前，先向便笺窗口发射 `'sticky://flush_save'`，前端在完成防抖存盘后会向后端发送 `sticky_flush_ack`，随后再销毁窗口。
+   - 关停便笺或原生宿主退出前，先向便笺窗口发射 `'sticky://flush-save'`（带 `request_id`），前端在完成防抖存盘后会向后端发送 `sticky_flush_result`，随后再销毁窗口。
+5. **密码本人工验收**:
+   - 密码本 Master Password 与生物识别由用户在真实桌面手工体验验收，请 Codex 在自动化 GUI 测试集中排除密码本敏感凭据写入/解锁操作。
