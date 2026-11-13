@@ -92,7 +92,8 @@
       "screenshot": "Enumerate displays, capture monitor regions, and generate image artifacts",
       "clipboard": "Bounded query, read text history, and write plain text to clipboard",
       "screen_ink": "Inspect canvas state, draw strokes, clear, and capture snapshot on the shared canvas",
-      "app_usage": "Inspect usage status, date range overview, app and hourly breakdown"
+      "app_usage": "Inspect usage status, date range overview, app and hourly breakdown",
+      "sticky_note": "Search, read, create, update notes, and open the original note window"
     },
     "names": {
       "screenshot": "Enhanced Screenshot & Pin",

@@ -17,7 +17,7 @@
             <button
               class="open-link"
               :aria-label="t('desktop.openFeature', { name: formatModuleName(module) })"
-              :disabled="!module.enabled || !module.available || !module.supported || opening != null || pendingHuman !== null"
+              :disabled="!module.enabled || !module.available || !module.supported || opening != null || pendingHuman.size > 0 || pendingAgent.size > 0"
               :title="module.enabled ? '' : t('desktop.enableFirst')"
               @click="emit('open', module.id)"
             >
@@ -49,15 +49,15 @@
               :aria-checked="module.enabled"
               :aria-label="t('moduleManager.switchAria', { name: formatModuleName(module) })"
               :title="formatModuleStatus(module)"
-              :disabled="!module.available || !module.supported || pendingHuman === module.id"
-              :aria-busy="pendingHuman === module.id"
+              :disabled="!module.available || !module.supported || pendingHuman.has(module.id)"
+              :aria-busy="pendingHuman.has(module.id)"
               @click="toggleEnabled(module)"
             >
               <span></span>
             </button>
           </div>
 
-          <!-- 开关 2：允许 Agent 访问（仅4模块支持，其余明确不支持） -->
+          <!-- 开关 2：允许 Agent 访问（仅五模块支持，其余明确不支持） -->
           <div class="control-row">
             <span class="control-label">{{ t('moduleManager.allowAgent') }}</span>
             <template v-if="isAgentSupported(module)">
@@ -68,8 +68,8 @@
                 :aria-checked="Boolean(module.agent_allowed)"
                 :aria-label="t('moduleManager.agentSwitchAria', { name: formatModuleName(module) })"
                 :title="formatAgentStatus(module)"
-                :disabled="!module.available || !module.supported || pendingAgent === module.id"
-                :aria-busy="pendingAgent === module.id"
+                :disabled="!module.available || !module.supported || pendingAgent.has(module.id)"
+                :aria-busy="pendingAgent.has(module.id)"
                 @click="toggleAgentAccess(module)"
               >
                 <span></span>
@@ -97,31 +97,102 @@ import { t } from '../utils/i18n';
 const props = defineProps<{ modules: ModuleStatus[]; opening?: string | null }>();
 const emit = defineEmits<{ changed: []; open: [moduleId: string] }>();
 
-/** A2 契约：仅四模块支持 Agent 访问，其余六项明确不支持且绝不显示授权开关 */
-const SUPPORTED_AGENT_MODULES = new Set(['screenshot', 'clipboard', 'screen_ink', 'app_usage']);
+/** A3 契约：支持名单共五项；以原生 catalog 明确的 agent_supported 为支持依据，缺字段保守 false，白名单拦截伪造标记 */
+const CONTRACT_AGENT_MODULES = new Set(['screenshot', 'clipboard', 'screen_ink', 'app_usage', 'sticky_note']);
 
 function isAgentSupported(module: ModuleStatus): boolean {
-  if (module.agent_supported !== undefined) {
-    return Boolean(module.agent_supported) && SUPPORTED_AGENT_MODULES.has(module.id);
-  }
-  return SUPPORTED_AGENT_MODULES.has(module.id);
+  return module.agent_supported === true && CONTRACT_AGENT_MODULES.has(module.id);
 }
 
-const pendingHuman = ref<string | null>(null);
-const pendingAgent = ref<string | null>(null);
+/** 按"人用/Agent × 模块"独立跟踪 pending，跨模块操作互不覆盖 */
+const pendingHuman = ref<Set<string>>(new Set());
+const pendingAgent = ref<Set<string>>(new Set());
 const error = ref('');
 
-let humanSeq = 0;
-let agentSeq = 0;
+/**
+ * 统一 catalog 版本机制（两类开关、跨模块共用）：
+ * - catalogSeq：请求发出序号；响应只按最新序号整份应用，反序完成的旧响应直接丢弃；
+ * - fullApplySeq：仅在整份 catalog 被权威应用（响应或 props）时推进，失败回滚以它判断是否安全；
+ * - changeSeq：任何本地状态变化都推进，配合内容指纹阻止旧 props 重放回退。
+ */
+let catalogSeq = 0;
+let appliedSeq = 0;
+let fullApplySeq = 0;
+let changeSeq = 0;
+const seenCatalogs = new Map<string, number>();
 
 // 维护本地响应式副本，支持后端权威 catalog 返回和并发更新
 const localModules = ref<ModuleStatus[]>([]);
+let localFingerprint = '';
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(',')}]`;
+  }
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+function fingerprintOf(modules: ModuleStatus[]): string {
+  return stableStringify(JSON.parse(JSON.stringify(modules)));
+}
+
+function applyCatalog(next: ModuleStatus[]) {
+  const copy = JSON.parse(JSON.stringify(next));
+  localModules.value = copy;
+  localFingerprint = fingerprintOf(copy);
+  changeSeq += 1;
+  fullApplySeq += 1;
+  seenCatalogs.set(localFingerprint, changeSeq);
+  if (seenCatalogs.size > 32) {
+    for (const [key, version] of seenCatalogs) {
+      if (version < changeSeq - 16) seenCatalogs.delete(key);
+    }
+  }
+}
+
+/** 只接受与当前一致或更新的 catalog；已见过的旧快照（旧 props 响应/反序响应）一律忽略 */
+function acceptCatalog(next: ModuleStatus[]): boolean {
+  const fp = fingerprintOf(next);
+  if (fp === localFingerprint) return true;
+  const seenAt = seenCatalogs.get(fp);
+  if (seenAt !== undefined && seenAt < changeSeq) return false;
+  applyCatalog(next);
+  return true;
+}
+
+/** 乐观更新单字段；返回的回滚仅在之后没有任何整份权威状态落地时生效 */
+function optimisticUpdate(
+  modId: string,
+  field: 'enabled' | 'agent_allowed',
+  value: boolean,
+): { rollback: () => void } {
+  const target = localModules.value.find((m) => m.id === modId);
+  const previous = target ? Boolean(target[field]) : false;
+  if (target) target[field] = value;
+  changeSeq += 1;
+  localFingerprint = '';
+  const fullSeqAtIssue = fullApplySeq;
+  return {
+    rollback: () => {
+      if (fullApplySeq !== fullSeqAtIssue) return;
+      const current = localModules.value.find((m) => m.id === modId);
+      if (current) current[field] = previous;
+      changeSeq += 1;
+      localFingerprint = '';
+    },
+  };
+}
 
 watch(
   () => props.modules,
   (newModules) => {
     if (Array.isArray(newModules)) {
-      localModules.value = JSON.parse(JSON.stringify(newModules));
+      acceptCatalog(newModules);
     }
   },
   { immediate: true, deep: true }
@@ -182,39 +253,29 @@ function formatAgentStatus(module: ModuleStatus): string {
 /** 切换功能开启/关闭 (人用开关) */
 async function toggleEnabled(module: ModuleStatus) {
   const modId = module.id;
-  const currentSeq = ++humanSeq;
-  pendingHuman.value = modId;
+  const seq = ++catalogSeq;
+  pendingHuman.value.add(modId);
   error.value = '';
 
   const previousState = module.enabled;
-  const target = localModules.value.find((m) => m.id === modId);
-  if (target) {
-    target.enabled = !previousState;
-  }
+  const optimistic = optimisticUpdate(modId, 'enabled', !previousState);
 
   try {
     const updated = await invokeIpc<ModuleStatus[] | null>('kernel_set_module_enabled', {
       module_id: modId,
       enabled: !previousState,
     });
-    if (currentSeq === humanSeq) {
-      if (Array.isArray(updated)) {
-        localModules.value = updated;
-      }
-      emit('changed');
+    if (seq > appliedSeq) {
+      appliedSeq = seq;
+      if (Array.isArray(updated)) acceptCatalog(updated);
     }
+    emit('changed');
   } catch (err) {
-    if (currentSeq === humanSeq) {
-      if (target) {
-        target.enabled = previousState;
-      }
-      error.value = err instanceof Error ? err.message : String(err);
-      emit('changed');
-    }
+    optimistic.rollback();
+    error.value = err instanceof Error ? err.message : String(err);
+    emit('changed');
   } finally {
-    if (currentSeq === humanSeq) {
-      pendingHuman.value = null;
-    }
+    pendingHuman.value.delete(modId);
   }
 }
 
@@ -224,39 +285,29 @@ async function toggleAgentAccess(module: ModuleStatus) {
   if (!isAgentSupported(module)) {
     return;
   }
-  const currentSeq = ++agentSeq;
-  pendingAgent.value = modId;
+  const seq = ++catalogSeq;
+  pendingAgent.value.add(modId);
   error.value = '';
 
   const previousAllowed = Boolean(module.agent_allowed);
-  const target = localModules.value.find((m) => m.id === modId);
-  if (target) {
-    target.agent_allowed = !previousAllowed;
-  }
+  const optimistic = optimisticUpdate(modId, 'agent_allowed', !previousAllowed);
 
   try {
     const updated = await invokeIpc<ModuleStatus[] | null>('kernel_set_agent_access', {
       module_id: modId,
       allowed: !previousAllowed,
     });
-    if (currentSeq === agentSeq) {
-      if (Array.isArray(updated)) {
-        localModules.value = updated;
-      }
-      emit('changed');
+    if (seq > appliedSeq) {
+      appliedSeq = seq;
+      if (Array.isArray(updated)) acceptCatalog(updated);
     }
+    emit('changed');
   } catch (err) {
-    if (currentSeq === agentSeq) {
-      if (target) {
-        target.agent_allowed = previousAllowed;
-      }
-      error.value = err instanceof Error ? err.message : String(err);
-      emit('changed');
-    }
+    optimistic.rollback();
+    error.value = err instanceof Error ? err.message : String(err);
+    emit('changed');
   } finally {
-    if (currentSeq === agentSeq) {
-      pendingAgent.value = null;
-    }
+    pendingAgent.value.delete(modId);
   }
 }
 </script>
