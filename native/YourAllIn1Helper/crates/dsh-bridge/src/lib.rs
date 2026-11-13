@@ -13,3 +13,15 @@ mod test_fixture;
 mod winutil;
 
 pub use service::run_from_env;
+
+/// Framing and Windows pipe primitives shared with the desktop control pipe.
+/// The desktop host must not start `BridgeService` or a second kernel.
+pub mod transport {
+    pub use crate::protocol::{
+        encode_frame, expected_pipe_name, parse_message, ClientMessage, FrameDecoder,
+        ProtocolFault, MAX_FRAME_LEN, PROTOCOL_VERSION,
+    };
+    pub use crate::winutil::{
+        client_process_id, create_listening_pipe, watch_parent, InstanceLock,
+    };
+}

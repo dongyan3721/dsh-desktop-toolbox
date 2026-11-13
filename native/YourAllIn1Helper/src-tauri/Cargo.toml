@@ -36,7 +36,9 @@ tracing.workspace = true
 parking_lot.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 base64 = "0.22"
-tokio.workspace = true
+tokio = { workspace = true, features = ["io-util", "net", "sync", "rt", "macros", "time"] }
+dsh-bridge = { path = "../crates/dsh-bridge" }
+uuid.workspace = true
 zeroize = "1.9.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
