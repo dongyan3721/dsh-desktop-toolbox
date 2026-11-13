@@ -3,6 +3,8 @@ import Schema from '@deepseek-ai/schemastery';
 import { mkdir } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
 import { NativeOwner, hostError } from '../host/native-owner.js';
+import { DesktopAgentAccess } from './agent-access.js';
+import { ToolboxArtifactService } from './artifacts.js';
 
 export const DESKTOP_RUNTIME = Object.freeze({
   executable: 'win32-x64/all-in-one-desktop.exe',
@@ -45,9 +47,11 @@ export class ToolboxDesktopService extends Service {
     this.createOwner = ownerFactory ?? (() => new NativeOwner(ctx.subprocess, this.config, DESKTOP_RUNTIME));
     this.phase = 'starting';
     this.stopping = false;
+    this.agentAccess = new DesktopAgentAccess(this);
     ctx.effect(() => async () => {
       this.stopping = true;
       this.phase = 'stopping';
+      this.agentAccess.dispose();
       await this.launchTask?.catch(() => {});
       await this.owner?.close();
     });
@@ -75,6 +79,7 @@ export class ToolboxDesktopService extends Service {
     owner.onUnavailable(() => {
       if (this.owner !== owner || this.stopping) return;
       this.phase = 'unavailable';
+      this.agentAccess.invalidate();
       this.previousExited = true;
       // Only a later explicit user action starts a replacement. Never replay
       // the previous control request after an uncertain transport outcome.
@@ -119,9 +124,14 @@ export class ToolboxDesktopService extends Service {
     if (result?.opened !== true) throw hostError('DESKTOP_PROTOCOL', 'The runtime did not acknowledge opening its panel');
     return { opened: true };
   }
+
+  getAgentAccess(options) { return this.agentAccess.get(options); }
+  agentCall(method, params, options) { return this.agentAccess.call(method, params, options); }
+  onAgentAccessChanged(listener) { return this.agentAccess.onChanged(listener); }
 }
 
 export async function apply(ctx, config) {
   const service = new ToolboxDesktopService(ctx, config);
   await service.start();
+  new ToolboxArtifactService(ctx, service);
 }

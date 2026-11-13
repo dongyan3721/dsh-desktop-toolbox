@@ -9,6 +9,7 @@
   "exports": {
     ".": "./lib/index.js",
     "./desktop": "./lib/desktop/index.js",
+    "./agent": "./lib/agent/index.js",
     "./human-entry": "./lib/human-entry/host.js"
   },
   "files": ["lib", "resources", "cordis.patch.yml", "human.patch.yml", "README.md"],

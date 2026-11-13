@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { mkdir } from 'node:fs/promises';
 
 export async function createToolboxContext({
-  moduleUrl = new URL('../packages/dsh-toolbox/lib/index.js', import.meta.url).href,
+  moduleUrl = new URL('../tests/fixtures/legacy-headless-plugin.mjs', import.meta.url).href,
   dataDir = fileURLToPath(new URL(`../runtime/loader-tests/${randomUUID()}/`, import.meta.url)),
   config = {},
 } = {}) {
