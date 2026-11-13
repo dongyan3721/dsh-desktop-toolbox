@@ -2,7 +2,9 @@
 
 将 `C:\Users\xcxix\PyCharmProjects\YourAllIn1Helper` 迁移为 DeepSeek Harness 插件。
 
-产品主线是**供人日常使用的工具箱**：保留原界面、操作与快捷键。A2 将功能启停与 Agent 授权拆为双开关；最新支持名单为截图、剪贴板、屏幕注释、应用使用时长、便笺五项，其他五项不支持 Agent。新授权默认关闭。当前人用预览 `0.1.0-alpha.6` 已在官方 Web 和已登录 Electron 中验证侧栏入口、原 Tauri 主窗、便笺及临时全局键；三位的前轮四模块 A2 代码已交付、尚未集成，便笺及共享接线仍待补齐，其余人用模块与旧数据导入继续按 H2/H3 验收。
+产品主线是**供人日常使用的工具箱**：保留原界面、窗口、托盘与快捷键。当前 `0.1.0-beta.1` 已完成 A3 集成和本机受控验收；五项支持 Agent 的模块为截图、剪贴板、屏幕注释、应用使用时长、便笺，功能启停与 Agent 授权独立，新授权默认关闭。其他五项只供人使用。
+
+两个安装包位于 `dist/`，已登录隔离 Electron 预览沿用原 D 盘数据。实际测试、发布哈希与明确未测项见 [beta 1 验收记录](docs/BETA1_ACCEPTANCE.zh-CN.md)。密码本/系统认证、外部翻译服务、个人旧数据导入与多显示器兼容不列为本次全部通过。
 
 - [迁移计划](docs/MIGRATION_PLAN.zh-CN.md)：架构、十个模块的迁移范围、阶段安排、数据与发布验收。
 - [人用优先实施计划](docs/HUMAN_FIRST_PLAN.zh-CN.md)：最新优先级、原快捷键对等清单和下一阶段人用闭环。
@@ -17,7 +19,7 @@
 - [人用桌面 H1 验收](docs/INTEGRATION_H1.zh-CN.md)：311 项自动测试、真实窗口/键盘/Electron/模型共存验收、安装包和已知限制。
 - [插件开发指南快照](docs/references/deepseek-harness-plugin-dev-guide/README.md)：按固定 commit 保存，来源见勘察基线。
 
-插件使用本机 Harness `0.2.2-rc.1` 的实际 SDK。默认人用 Bundle 启动原桌面服务，并与同版本 Client 包提供可见入口；旧 headless/Agent 入口需显式选择。新配置只启用便笺，其他模块保持原源码和默认键定义，尚不宣称全部实测。原生源码按固定基线导出到 `native/YourAllIn1Helper`；原 C 盘项目保持只读。构建中间文件、测试数据和发布包均在本工作区中生成，共享缓存和工具链复用 D 盘目录。
+插件使用本机 Harness `0.2.2-rc.1` 的实际 SDK。默认人用 Bundle 启动原桌面服务，并与同版本 Client 包提供可见入口；旧 headless Agent 产品入口已退役，历史 alpha 归档保持冻结。新配置只启用便笺，其他模块保持原源码和默认键定义，尚不宣称全部实测。原生源码按固定基线导出到 `native/YourAllIn1Helper`；原 C 盘项目保持只读。构建中间文件、测试数据和发布包均在本工作区中生成，共享缓存和工具链复用 D 盘目录。
 
 当前本机已安装预览可通过 `./scripts/Open-HumanPreview.ps1` 重新打开。此脚本使用 `runtime/human-preview.json` 中记录的 D 盘隔离目录，保留本次用户登录与测试数据。命令行替换/升级包前先正常退出 Harness，避免运行中的 Windows exe 被 pnpm 文件锁阻止替换。
 
@@ -43,4 +45,4 @@ node ./scripts/demo.mjs
 
 现有后端验收脚本启动真实 CLI/Profile，不调用模型 API；检查便笺创建/查询/更新、重启持久化、配置重载、图片实际格式和卸载配置。它不验证原生 GUI 或快捷键。Windows x64 是本轮运行目标，外部发布前仍需完整许可和额外系统兼容性审计。日常用户 Profile 不在本轮安装范围内。
 
-三位本机 agent 沿用独立工作树：H1 中 Cursor 实现桌面宿主，Antigravity 核对原 Vue 对等，Zed 实现可见 Client 入口。Codex 在 `.worktrees/integration` 集成、修复并执行真实测试，通过门槛后合并 main。边界与接口见 [H1 契约](docs/H1_CONTRACT.md)、[桥协议](docs/BRIDGE_PROTOCOL.md) 及 `docs/tasks/`。
+三位本机 agent 沿用独立工作树：Cursor 提供原生能力、CodeBuddy 接替 Antigravity 完成前端、Zed 提供 Agent 工具。Codex 负责集成、修复、真实测试和 beta 打包；不新建分支或工作树。边界与接口见 [H1 契约](docs/H1_CONTRACT.md)、[桥协议](docs/BRIDGE_PROTOCOL.md) 及 `docs/tasks/`。

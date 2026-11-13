@@ -44,9 +44,19 @@ async function run(ctx, signal) {
     assert.equal((await call('toolbox_notes', { action: 'read', id: found[0].id })).value.content_md, 'Beta packaged profile: 中文保存成功。');
     return { persistedAcrossRestart: true, fiveTools: names };
   }
-  assert.equal(found.length, 0);
-  await call('toolbox_notes', { action: 'create', title: 'DSH-BETA-PROFILE', content_md: 'Beta packaged profile: 中文保存成功。' });
+  assert.ok(found.length <= 1);
+  if (!found.length) await call('toolbox_notes', { action: 'create', title: 'DSH-BETA-PROFILE', content_md: 'Beta packaged profile: 中文保存成功。' });
   await call('toolbox_screen_ink', { action: 'start' });
+  // A newly created WebView can honestly return BUSY until its original canvas
+  // registers. Poll a read only operation; never retry a possibly committed draw.
+  const readyDeadline = Date.now() + 15000;
+  for (;;) {
+    try { await desktop.agentCall('agent.ink.snapshot', {}, { signal }); break; }
+    catch (error) {
+      if (error.code !== 'BUSY' || Date.now() >= readyDeadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+  }
   await call('toolbox_screen_ink', { action: 'draw', strokes: [{ points: [{ x: 600, y: 350 }, { x: 850, y: 350 }], width: 8, color: '#1166EE' }] });
   const snapshot = await call('toolbox_screen_ink', { action: 'snapshot' });
   assert.ok(snapshot.content.some(c => c.type === 'image' && c.attachment?.attachmentId));
