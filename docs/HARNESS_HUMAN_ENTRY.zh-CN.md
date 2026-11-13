@@ -151,7 +151,7 @@ const result = await ctx.connection.rpc.call("/toolbox-human", "showMain", {}, s
   - `showMain` → `toolboxDesktop.showMain({ signal })`
   - `openPanel` → `toolboxDesktop.openPanel(moduleId, { signal })`
   - 服务缺失返回 `DEPENDENCY_MISSING`；输入错误返回 `INVALID_REQUEST`；未知 endpoint 返回 `UNSUPPORTED`；取消返回 `CANCELLED`；其他错误净化后返回稳定 code 或 `INTERNAL`。
-- 该服务是 H1_CONTRACT 的 proposed API，不是当前 SDK 已存在的 API；由 Codex 提供。
+- 该服务是 H1_CONTRACT 的 proposed API；Codex 已在 integration 分支提供 `toolboxDesktop` 服务。本工作树未包含该 desktop runtime，因此只验证 adapter 的接口消费和错误映射，不声称真实桌面调用成功。
 
 ### 3.3 Bundle / 装配请求（Codex 负责）
 
@@ -168,7 +168,7 @@ const result = await ctx.connection.rpc.call("/toolbox-human", "showMain", {}, s
 - 本轮**没有启动 GUI、没有点击 Harness、没有发送全局键**；真实可见性、菜单渲染、侧边栏点击、Tauri 窗口、焦点和快捷键均未由 Zed 验收。
 - 未在真实桌面 Profile 中安装或启用 `dsh-toolbox-client`；Profile 写入由 Codex 负责。
 - 当前安装物未提供可独立调用的公共 Client build preset；手写 bundle 的结构来自已安装 first-party bundle 的实际形状，仍需真实加载验证。若 loader 拒绝手写 bundle，Codex 可用仓库内共享 Client 构建预设重新产出同一 `./client` 导出。
-- `toolboxDesktop` 尚不存在；本分支只能用测试 fake 验证 adapter 逻辑，不能声称真实桌面服务成功。
+- 本工作树未包含 integration 分支的 `toolboxDesktop`；实际 desktop service 调用由 Codex 验收。本轮使用**实际安装的 `@deepseek-ai/dsh-client-connection` Node Client** 验证 generic RPC envelope/错误层，service 本身仍为 fake。
 - 没有用 Tool、聊天斜杠命令、CLI 或控制台命令替代人的可见入口。若真实 GUI 验证失败，应报告入口未完成，而不是降低验收标准。
 
 ## 5. 本分支实际文件与自动验证
@@ -177,8 +177,9 @@ const result = await ctx.connection.rpc.call("/toolbox-human", "showMain", {}, s
 - `packages/dsh-toolbox-client/client.js`：手写 lazy-CJS bundle；`window.__ModuleLoader__.load` 注册 `dsh-toolbox-client`，导出 `apply`/`inject`；注册 `sidebar.panellist` 和 `main` 的 `toolbox` 同 id。
 - `packages/dsh-toolbox-client/index.js`：Host 半 entry；重新导出 `dsh-toolbox/human-entry` 的 `apply`/`inject`（该子路径导出由 Codex 增加）。
 - `packages/dsh-toolbox-client/cordis.patch.yml`：插入 `toolbox-human-entry` Loader Entry。
-- `packages/dsh-toolbox/src/human-entry/host.js`：`/toolbox-human` 通用 RPC adapter；`status`/`showMain`/`openPanel`。
-- `packages/dsh-toolbox/tests/human-entry.host.test.mjs`、`human-entry.client.test.mjs`：18 + 1 项入口/adapter 测试。
+- `packages/dsh-toolbox/src/human-entry/host.js`：`/toolbox-human` 通用 RPC adapter；`status`/`showMain`/`openPanel`；显式保留 `OUTCOME_UNKNOWN`、`NATIVE_UNAVAILABLE`、`NATIVE_START_FAILED`、`NATIVE_START_TIMEOUT`、`NATIVE_INTEGRITY`、`DESKTOP_PROTOCOL`、`DESKTOP_CAPABILITIES`、`DESKTOP_SHUTDOWN_FAILED`；`causeCode` 进入 debug details。
+- `packages/dsh-toolbox/tests/human-entry.host.test.mjs`、`human-entry.client.test.mjs`、`human-entry.sdk.test.mjs`：入口/adapter 测试 + 实际 Connection SDK 集成测试。
+- 可见错误只显示简洁中文和可操作建议；内部 code、英文 message、堆栈不进入正常界面，调试信息保留在 Error 对象的 `code`/`message`/`details`。
 
 自动验证命令（工作树内）：
 
@@ -186,6 +187,6 @@ const result = await ctx.connection.rpc.call("/toolbox-human", "showMain", {}, s
 powershell.exe -NoProfile -Command ". 'D:\Code\dsh-toolbox\.worktrees\zed\scripts\Use-ProjectEnvironment.ps1'; Set-Location 'D:\Code\dsh-toolbox\.worktrees\zed'; node --test packages/dsh-toolbox/tests/human-entry*.test.mjs"
 ```
 
-结果：19 项通过。随后运行 `node --test packages/dsh-toolbox/tests/*.test.mjs`：98 项通过、0 失败。`npm pack --dry-run --json` 在 client 包内列出 `README.md`、`client.js`、`cordis.patch.yml`、`index.js`、`package.json` 五个文件（约 3.2 KB tgz）。
+结果：29 项通过（包含实际 `@deepseek-ai/dsh-client-connection` Node Client 的 envelope/rpcId/错误层测试）。随后运行 `node --test packages/dsh-toolbox/tests/*.test.mjs`：108 项通过、0 失败。`npm pack --dry-run --json` 在 client 包内列出 `README.md`、`client.js`、`cordis.patch.yml`、`index.js`、`package.json` 五个文件（约 3.2 KB tgz）。
 
-这些是源码/包形状和 fake service 的自动测试，不是 GUI 验收。
+这些是源码/包形状、实际 SDK Connection 与 fake desktop service 的自动测试，不是 GUI 验收。

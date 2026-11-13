@@ -151,6 +151,48 @@ test('service errors keep stable codes and sanitize messages', async () => {
   assert.equal(unknownResult.error.message.includes('private'), false)
 })
 
+test('NativeOwner and desktop stable codes are preserved instead of becoming INTERNAL', async () => {
+  const codes = [
+    'OUTCOME_UNKNOWN',
+    'NATIVE_UNAVAILABLE',
+    'NATIVE_START_FAILED',
+    'NATIVE_START_TIMEOUT',
+    'NATIVE_INTEGRITY',
+    'DESKTOP_PROTOCOL',
+    'DESKTOP_CAPABILITIES',
+    'DESKTOP_SHUTDOWN_FAILED',
+  ]
+
+  for (const code of codes) {
+    const desktop = createDesktop({
+      async showMain() {
+        throw Object.assign(new Error(`failure ${code}`), { code })
+      },
+    })
+    const result = await createHumanEntryHandler(() => desktop)('showMain', {}, freshSignal())
+    assert.equal(result.ok, false)
+    assert.equal(result.error.code, code)
+    assert.equal(result.error.message, `failure ${code}`)
+    assert.deepEqual(result.error.details, {})
+  }
+})
+
+test('OUTCOME_UNKNOWN causeCode is retained in debug details', async () => {
+  const desktop = createDesktop({
+    async showMain() {
+      throw Object.assign(new Error('outcome unknown'), {
+        code: 'OUTCOME_UNKNOWN',
+        causeCode: 'CANCELLED',
+      })
+    },
+  })
+
+  const result = await createHumanEntryHandler(() => desktop)('showMain', {}, freshSignal())
+  assert.equal(result.ok, false)
+  assert.equal(result.error.code, 'OUTCOME_UNKNOWN')
+  assert.deepEqual(result.error.details, { causeCode: 'CANCELLED' })
+})
+
 test('AbortError and pre-aborted requests report CANCELLED', async () => {
   const aborted = new AbortController()
   aborted.abort()
