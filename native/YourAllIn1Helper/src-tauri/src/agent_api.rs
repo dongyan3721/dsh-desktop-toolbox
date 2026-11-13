@@ -1,11 +1,11 @@
 //! Agent data methods on the same desktop kernel. Human IPC is not forwarded here.
 
 use std::io::Cursor;
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use app_core::{agent_error_code, CoreError, MODULE_CATALOG};
+use base64::Engine;
 use image::codecs::png::PngEncoder;
 use image::{ExtendedColorType, ImageEncoder};
 use serde_json::{json, Map, Value};
@@ -23,6 +23,13 @@ const MAX_PIXELS: u64 = 16_000_000;
 const MAX_PNG_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STROKES: usize = 128;
 const MAX_POINTS: usize = 8192;
+const MAX_NOTE_BODY: usize = 256 * 1024;
+const MAX_TITLE_SCALARS: usize = 500;
+const MAX_QUERY_SCALARS: usize = 200;
+const MAX_NOTE_ID_SCALARS: usize = 80;
+const NOTE_LIST_LIMIT: i64 = 20;
+const MAX_NOTE_OFFSET: i64 = 10_000;
+const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 pub fn dispatch(
     host: &DesktopHost,
@@ -91,16 +98,9 @@ pub fn dispatch(
                 .map_err(execution)?;
             Ok(serde_json::to_value(snapshot).map_err(internal)?)
         }
-        "agent.ink.clear" => {
-            guard(host, "screen_ink")?;
-            require_exact(params, &[])?;
-            host.screen_ink
-                .clear_canvas(host.kernel().context())
-                .map_err(execution)?;
-            Ok(json!({"cleared": true}))
-        }
-        "agent.ink.draw" => ink_draw(host, params),
-        "agent.ink.snapshot" => ink_snapshot(host, params),
+        "agent.ink.clear" => ink_clear(host, params, cancel),
+        "agent.ink.draw" => ink_draw(host, params, cancel),
+        "agent.ink.snapshot" => ink_snapshot(host, params, cancel),
         "agent.usage.status" => {
             guard(host, "app_usage")?;
             require_exact(params, &[])?;
@@ -113,21 +113,24 @@ pub fn dispatch(
         "agent.usage.overview" => usage_overview(host, params),
         "agent.usage.apps" => usage_apps(host, params),
         "agent.usage.hourly" => usage_hourly(host, params),
+        "agent.notes.search" => notes_search(host, params),
+        "agent.notes.read" => notes_read(host, params, cancel),
+        "agent.notes.create" => notes_create(host, params, cancel),
+        "agent.notes.update" => notes_update(host, params, cancel),
+        "agent.notes.open" => notes_open(host, params, cancel),
+        "agent.artifacts.read" => artifacts_read(host, params, cancel),
         _ => Err(ControlError::new(
             "UNSUPPORTED",
             "method is not an agent data method",
         )),
     }?;
-    if cancel.load(Ordering::Acquire) {
-        return Err(ControlError::cancelled());
-    }
     Ok(result)
 }
 
 pub fn load_screenshot_artifact(host: &DesktopHost, artifact_id: &str) -> Result<Vec<u8>, ControlError> {
-    guard(host, "screenshot")?;
-    let path = artifact_path(host, artifact_id)?;
-    std::fs::read(&path).map_err(|_| ControlError::new("UNAVAILABLE", "screenshot artifact is not available"))
+    host.agent_artifacts
+        .lock()
+        .bytes(host, artifact_id, "screenshot")
 }
 
 fn access_snapshot(host: &DesktopHost) -> Value {
@@ -210,9 +213,11 @@ fn capture(host: &DesktopHost, params: &Value, cancel: &AtomicBool) -> Result<Va
     }
     std::fs::write(&path, &png).map_err(internal)?;
     let sidecar = path.with_extension("json");
+    let epoch = host.kernel().agent_grant_epoch("screenshot");
     let meta = json!({
         "module": "screenshot",
-        "revision": host.kernel().agent_revision(),
+        "module_id": "screenshot",
+        "revision": epoch,
         "width": width,
         "height": height,
     });
@@ -221,15 +226,27 @@ fn capture(host: &DesktopHost, params: &Value, cancel: &AtomicBool) -> Result<Va
         return Err(internal(std::io::Error::other("artifact metadata was not stored")));
     }
     guard(host, "screenshot")?;
+    if host
+        .agent_artifacts
+        .lock()
+        .insert(artifact_id.clone(), "screenshot", png.clone(), width, height, epoch)
+        .is_err()
+    {
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&sidecar);
+        return Err(ControlError::new("UNAVAILABLE", "artifact was not stored"));
+    }
+    remember_commit(host, cancel);
     Ok(json!({
         "artifact_id": artifact_id,
+        "module_id": "screenshot",
         "mime_type": "image/png",
         "byte_length": png.len(),
         "width": width,
         "height": height,
         "relative_path": relative,
         "synthetic": host.mock_hal.is_some(),
-        "revision": host.kernel().agent_revision(),
+        "revision": epoch,
     }))
 }
 
@@ -325,14 +342,12 @@ fn clipboard_write(
         })?;
         "os"
     };
-    if cancel.load(Ordering::Acquire) {
-        return Err(ControlError::cancelled());
-    }
     let record = host
         .clipboard
         .record_explicit_text(host.kernel().context(), &text)
         .map_err(execution)?;
     guard(host, "clipboard")?;
+    remember_commit(host, cancel);
     Ok(json!({
         "id": record.id,
         "backend": backend,
@@ -340,22 +355,135 @@ fn clipboard_write(
     }))
 }
 
-fn ink_draw(host: &DesktopHost, params: &Value) -> Result<Value, ControlError> {
-    guard(host, "screen_ink")?;
-    let _strokes = parse_strokes(host, params)?;
-    Err(ControlError::new(
-        "UNAVAILABLE",
-        "shared canvas has no draw acknowledgment yet",
-    ))
-}
-
-fn ink_snapshot(host: &DesktopHost, params: &Value) -> Result<Value, ControlError> {
+fn ink_clear(host: &DesktopHost, params: &Value, cancel: &AtomicBool) -> Result<Value, ControlError> {
     guard(host, "screen_ink")?;
     require_exact(params, &[])?;
-    Err(ControlError::new(
-        "UNAVAILABLE",
-        "shared canvas pixels are not available to native",
-    ))
+    let Some(session) = host.agent_ui.session_for_ink() else {
+        return Err(ControlError::new(
+            "UNAVAILABLE",
+            "shared canvas has no draw acknowledgment yet",
+        ));
+    };
+    let bounds = canvas_bounds(host)?;
+    let ack = host.agent_ui.roundtrip(
+        "screen-ink-canvas",
+        &session,
+        "screen-ink://agent-command",
+        "clear",
+        ink_fields(None, &bounds),
+        cancel,
+    )?;
+    if !ack.ok {
+        return Err(ui_failure(&ack));
+    }
+    guard(host, "screen_ink")?;
+    Ok(json!({"cleared": true}))
+}
+
+fn ink_draw(host: &DesktopHost, params: &Value, cancel: &AtomicBool) -> Result<Value, ControlError> {
+    guard(host, "screen_ink")?;
+    let count = parse_strokes(host, params)?;
+    if host.agent_ui.pointer_active() {
+        return Err(ControlError::new("BUSY", "a pointer stroke is active"));
+    }
+    let Some(session) = host.agent_ui.session_for_ink() else {
+        return Err(ControlError::new(
+            "UNAVAILABLE",
+            "shared canvas has no draw acknowledgment yet",
+        ));
+    };
+    let bounds = canvas_bounds(host)?;
+    let strokes = logical_strokes(params, &bounds)?;
+    let ack = host.agent_ui.roundtrip(
+        "screen-ink-canvas",
+        &session,
+        "screen-ink://agent-command",
+        "draw",
+        ink_fields(Some(strokes), &bounds),
+        cancel,
+    )?;
+    if !ack.ok {
+        return Err(ui_failure(&ack));
+    }
+    let applied = ack
+        .result
+        .get("applied")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "canvas acknowledgment is incomplete"))?;
+    if applied > count as u64 {
+        return Err(ControlError::new("INVALID_REQUEST", "canvas acknowledgment is incomplete"));
+    }
+    guard(host, "screen_ink")?;
+    Ok(json!({"applied": applied, "revision": host.kernel().agent_revision()}))
+}
+
+fn ink_snapshot(host: &DesktopHost, params: &Value, cancel: &AtomicBool) -> Result<Value, ControlError> {
+    guard(host, "screen_ink")?;
+    require_exact(params, &[])?;
+    let Some(session) = host.agent_ui.session_for_ink() else {
+        return Err(ControlError::new(
+            "UNAVAILABLE",
+            "shared canvas pixels are not available to native",
+        ));
+    };
+    let bounds = canvas_bounds(host)?;
+    let ack = host.agent_ui.roundtrip(
+        "screen-ink-canvas",
+        &session,
+        "screen-ink://agent-command",
+        "snapshot",
+        ink_fields(None, &bounds),
+        cancel,
+    )?;
+    if !ack.ok {
+        return Err(ui_failure(&ack));
+    }
+    let claimed_width = ack
+        .result
+        .get("width")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "canvas acknowledgment is incomplete"))?;
+    let claimed_height = ack
+        .result
+        .get("height")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "canvas acknowledgment is incomplete"))?;
+    let encoded = ack
+        .result
+        .get("png_base64")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "canvas acknowledgment is incomplete"))?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(encoded)
+        .map_err(|_| ControlError::new("INVALID_REQUEST", "png is not valid"))?;
+    let (width, height) = crate::agent_artifacts::validate_png(&bytes)?;
+    if u64::from(width) != claimed_width || u64::from(height) != claimed_height {
+        return Err(ControlError::new("INVALID_REQUEST", "png metadata does not match"));
+    }
+    if cancel.load(Ordering::Acquire) {
+        return Err(ControlError::cancelled());
+    }
+    guard(host, "screen_ink")?;
+    let epoch = host.kernel().agent_grant_epoch("screen_ink");
+    let artifact_id = uuid::Uuid::new_v4().simple().to_string();
+    host.agent_artifacts.lock().insert(
+        artifact_id.clone(),
+        "screen_ink",
+        bytes.clone(),
+        width,
+        height,
+        epoch,
+    )?;
+    remember_commit(host, cancel);
+    Ok(json!({
+        "artifact_id": artifact_id,
+        "module_id": "screen_ink",
+        "mime_type": "image/png",
+        "byte_length": bytes.len(),
+        "width": width,
+        "height": height,
+        "synthetic": host.mock_hal.is_some(),
+        "revision": epoch,
+    }))
 }
 
 fn usage_overview(host: &DesktopHost, params: &Value) -> Result<Value, ControlError> {
@@ -406,6 +534,505 @@ fn usage_hourly(host: &DesktopHost, params: &Value) -> Result<Value, ControlErro
         .map_err(execution)?;
     guard(host, "app_usage")?;
     Ok(serde_json::to_value(hourly).map_err(internal)?)
+}
+
+fn notes_search(host: &DesktopHost, params: &Value) -> Result<Value, ControlError> {
+    guard(host, "sticky_note")?;
+    let map = require_exact(params, &["query", "limit", "offset"])?;
+    let query = match map.get("query") {
+        None => None,
+        Some(Value::String(value))
+            if !value.contains('\0') && value.chars().count() <= MAX_QUERY_SCALARS =>
+        {
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.as_str())
+            }
+        }
+        _ => return Err(ControlError::new("INVALID_REQUEST", "query is invalid")),
+    };
+    let limit = match map.get("limit") {
+        None => NOTE_LIST_LIMIT,
+        Some(value) => note_limit(value)?,
+    };
+    let offset = match map.get("offset") {
+        None => 0,
+        Some(value) => {
+            let offset = value
+                .as_i64()
+                .filter(|offset| (0..=MAX_NOTE_OFFSET).contains(offset))
+                .ok_or_else(|| ControlError::new("INVALID_REQUEST", "offset is out of range"))?;
+            offset
+        }
+    };
+    let notes = host
+        .sticky_note
+        .search_summaries(
+            host.kernel().context(),
+            query,
+            limit as usize,
+            offset as usize,
+        )
+        .map_err(execution)?;
+    guard(host, "sticky_note")?;
+    Ok(json!({ "items": notes }))
+}
+
+fn notes_read(host: &DesktopHost, params: &Value, cancel: &AtomicBool) -> Result<Value, ControlError> {
+    guard(host, "sticky_note")?;
+    let map = require_exact(params, &["id"])?;
+    let id = required_note_id(map)?;
+    let mut note = host
+        .sticky_note
+        .get_note(host.kernel().context(), &id)
+        .map_err(execution)?
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "note was not found"))?;
+    // A write cursor left by commit_agent_update is only an autosave fence.
+    // Handshake is required for an open window, and only after that window
+    // has registered with toolbox_agent_ui_ready.
+    let _editor = if note.is_open {
+        if host.agent_ui.session_for_note(&id).is_none() {
+            return Err(ControlError::new(
+                "UNAVAILABLE",
+                "open note editor is not synchronized yet",
+            ));
+        }
+        let editor = sync_open_editor(host, &id, cancel)?;
+        note = host
+            .sticky_note
+            .get_note(host.kernel().context(), &id)
+            .map_err(execution)?
+            .ok_or_else(|| ControlError::new("INVALID_REQUEST", "note was not found"))?;
+        Some(editor)
+    } else { None };
+    if note.content_md.len() > MAX_NOTE_BODY {
+        return Err(ControlError::new(
+            "INVALID_REQUEST",
+            "note body exceeds 256KiB",
+        ));
+    }
+    guard(host, "sticky_note")?;
+    Ok(json!({
+        "id": note.id,
+        "title": note.title,
+        "content_md": note.content_md,
+        "updated_at": note.updated_at,
+        "is_open": note.is_open,
+    }))
+}
+
+fn notes_create(
+    host: &DesktopHost,
+    params: &Value,
+    cancel: &AtomicBool,
+) -> Result<Value, ControlError> {
+    guard(host, "sticky_note")?;
+    let map = require_exact(params, &["title", "content_md"])?;
+    let title = required_title(map)?;
+    let content = optional_body(map)?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(ControlError::cancelled());
+    }
+    guard(host, "sticky_note")?;
+    let note = host
+        .sticky_note
+        .create_closed_note(host.kernel().context(), Some(&title), Some(&content))
+        .map_err(execution)?;
+    guard(host, "sticky_note")?;
+    remember_commit(host, cancel);
+    Ok(json!({
+        "id": note.id,
+        "title": note.title,
+        "content_md": note.content_md,
+        "updated_at": note.updated_at,
+        "is_open": note.is_open,
+    }))
+}
+
+fn notes_update(
+    host: &DesktopHost,
+    params: &Value,
+    cancel: &AtomicBool,
+) -> Result<Value, ControlError> {
+    guard(host, "sticky_note")?;
+    let map = require_exact(params, &["id", "expected_updated_at", "title", "content_md"])?;
+    let id = required_note_id(map)?;
+    let expected = required_safe_integer(map, "expected_updated_at")?;
+    let title = match map.get("title") {
+        None => None,
+        Some(_) => Some(required_title(map)?),
+    };
+    let content = match map.get("content_md") {
+        None => None,
+        Some(_) => Some(optional_body(map)?),
+    };
+    if title.is_none() && content.is_none() {
+        return Err(ControlError::new(
+            "INVALID_REQUEST",
+            "title or content_md is required",
+        ));
+    }
+    let existing = host
+        .sticky_note
+        .get_note(host.kernel().context(), &id)
+        .map_err(execution)?
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "note was not found"))?;
+    let open = existing.is_open;
+    let editor = if open {
+        if host.agent_ui.session_for_note(&id).is_none() {
+            return Err(ControlError::new(
+                "UNAVAILABLE",
+                "open note editor is not synchronized yet",
+            ));
+        }
+        Some(sync_open_editor(host, &id, cancel)?)
+    } else { None };
+    if cancel.load(Ordering::Acquire) {
+        return Err(ControlError::cancelled());
+    }
+    guard(host, "sticky_note")?;
+    let (outcome, session) = host
+        .sticky_note
+        .commit_agent_update(
+            host.kernel().context(),
+            &id,
+            title.as_deref(),
+            content.as_deref(),
+            expected,
+        )
+        .map_err(execution)?;
+    let note = match outcome {
+        mod_sticky_note::ClosedNoteSave::Applied(note) => note,
+        mod_sticky_note::ClosedNoteSave::Conflict(_) => {
+            return Err(ControlError::new("CONFLICT", "note changed before the update"));
+        }
+        mod_sticky_note::ClosedNoteSave::Missing => {
+            return Err(ControlError::new("INVALID_REQUEST", "note was not found"));
+        }
+    };
+    remember_commit(host, cancel);
+    guard(host, "sticky_note")?;
+    let display_sync = if !open {
+        "closed"
+    } else if cancel.load(Ordering::Acquire) {
+        "pending"
+    } else {
+        let applied = apply_open_editor(host, &id, &editor.as_ref().unwrap().session, &note, session.unwrap_or(0));
+        if applied { "applied" } else { "pending" }
+    };
+    Ok(json!({
+        "id": note.id,
+        "title": note.title,
+        "content_md": note.content_md,
+        "updated_at": note.updated_at,
+        "is_open": note.is_open,
+        "write_session_id": session,
+        "display_sync": display_sync,
+    }))
+}
+
+fn notes_open(
+    host: &DesktopHost,
+    params: &Value,
+    cancel: &AtomicBool,
+) -> Result<Value, ControlError> {
+    guard(host, "sticky_note")?;
+    let map = require_exact(params, &["id"])?;
+    let id = required_note_id(map)?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(ControlError::cancelled());
+    }
+    guard(host, "sticky_note")?;
+    let note = host
+        .sticky_note
+        .show_note(host.kernel().context(), &id)
+        .map_err(|error| {
+            if error.to_string().contains("not found") || error.to_string().contains("未找到") {
+                ControlError::new("INVALID_REQUEST", "note was not found")
+            } else {
+                execution(error)
+            }
+        })?;
+    guard(host, "sticky_note")?;
+    Ok(json!({
+        "id": note.id,
+        "title": note.title,
+        "updated_at": note.updated_at,
+        "is_open": note.is_open,
+        "window_label": mod_sticky_note::StickyNoteModule::window_label_for(&note.id),
+    }))
+}
+
+fn required_note_id(map: &Map<String, Value>) -> Result<String, ControlError> {
+    match map.get("id") {
+        Some(Value::String(id))
+            if (1..=MAX_NOTE_ID_SCALARS).contains(&id.chars().count())
+                && id.chars().all(|ch| !ch.is_control()) =>
+        {
+            Ok(id.clone())
+        }
+        _ => Err(ControlError::new("INVALID_REQUEST", "id is invalid")),
+    }
+}
+
+fn required_title(map: &Map<String, Value>) -> Result<String, ControlError> {
+    match map.get("title") {
+        Some(Value::String(title))
+            if !title.contains('\0')
+                && (1..=MAX_TITLE_SCALARS).contains(&title.chars().count()) =>
+        {
+            Ok(title.clone())
+        }
+        _ => Err(ControlError::new("INVALID_REQUEST", "title is invalid")),
+    }
+}
+
+fn optional_body(map: &Map<String, Value>) -> Result<String, ControlError> {
+    match map.get("content_md") {
+        None => Ok(String::new()),
+        Some(Value::String(body)) if !body.contains('\0') && body.len() <= MAX_NOTE_BODY => {
+            Ok(body.clone())
+        }
+        _ => Err(ControlError::new("INVALID_REQUEST", "content_md is invalid")),
+    }
+}
+
+fn required_safe_integer(map: &Map<String, Value>, key: &str) -> Result<i64, ControlError> {
+    let value = map
+        .get(key)
+        .and_then(Value::as_i64)
+        .filter(|value| (0..=JS_MAX_SAFE_INTEGER).contains(value))
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "expected a safe integer"))?;
+    Ok(value)
+}
+
+fn note_limit(value: &Value) -> Result<i64, ControlError> {
+    value
+        .as_i64()
+        .filter(|limit| (1..=NOTE_LIST_LIMIT).contains(limit))
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "limit must be 1 to 20"))
+}
+
+fn artifacts_read(host: &DesktopHost, params: &Value, cancel: &AtomicBool) -> Result<Value, ControlError> {
+    let map = require_exact(params, &["artifact_id", "module_id", "offset", "length"])?;
+    let artifact_id = match map.get("artifact_id").and_then(Value::as_str) {
+        Some(id) if id.len() == 32 && id.chars().all(|ch| ch.is_ascii_hexdigit()) => id.to_string(),
+        _ => return Err(ControlError::new("INVALID_REQUEST", "artifact id is invalid")),
+    };
+    let module_id = match map.get("module_id").and_then(Value::as_str) {
+        Some(id) => id.to_string(),
+        _ => return Err(ControlError::new("INVALID_REQUEST", "module_id is invalid")),
+    };
+    let offset = map
+        .get("offset")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "offset must be an unsigned integer"))?;
+    let length = map
+        .get("length")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "length must be an unsigned integer"))?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(ControlError::cancelled());
+    }
+    host.agent_artifacts
+        .lock()
+        .read(host, &artifact_id, &module_id, offset, length)
+}
+
+fn remember_commit(host: &DesktopHost, cancel: &AtomicBool) {
+    if host
+        .agent_flip_cancel_on_commit
+        .swap(false, Ordering::AcqRel)
+    {
+        cancel.store(true, Ordering::Release);
+    }
+}
+
+struct PreparedNote<'a> {
+    host: &'a DesktopHost,
+    id: String,
+    session: String,
+}
+
+impl Drop for PreparedNote<'_> {
+    fn drop(&mut self) { release_note(self.host, &self.id, &self.session); }
+}
+
+fn sync_open_editor<'a>(host: &'a DesktopHost, note_id: &str, cancel: &AtomicBool) -> Result<PreparedNote<'a>, ControlError> {
+    let session = host.agent_ui.session_for_note(note_id).ok_or_else(|| {
+        ControlError::new("UNAVAILABLE", "open note editor is not synchronized yet")
+    })?;
+    let label = format!("sticky-note-{note_id}");
+    let mut fields = Map::new();
+    fields.insert("note_id".to_string(), json!(note_id));
+    let ack = match host.agent_ui.roundtrip(
+        &label,
+        &session,
+        "sticky://agent-command",
+        "prepare",
+        fields,
+        cancel,
+    ) {
+        Ok(ack) => ack,
+        Err(error) => {
+            release_note(host, note_id, &session);
+            return Err(error);
+        }
+    };
+    if !ack.ok {
+        release_note(host, note_id, &session);
+        return Err(ui_failure(&ack));
+    }
+    Ok(PreparedNote { host, id: note_id.to_string(), session })
+}
+
+fn apply_open_editor(host: &DesktopHost, note_id: &str, session: &str, note: &mod_sticky_note::StickyNoteRecord, write_session_id: u64) -> bool {
+    let label = format!("sticky-note-{note_id}");
+    let mut fields = Map::new();
+    fields.insert("note_id".to_string(), json!(note_id));
+    fields.insert("write_session_id".to_string(), json!(write_session_id));
+    fields.insert(
+        "record".to_string(),
+        json!({
+            "id": note.id,
+            "title": note.title,
+            "content_md": note.content_md,
+            "updated_at": note.updated_at,
+            "is_open": note.is_open,
+        }),
+    );
+    matches!(
+        host.agent_ui.roundtrip(
+            &label,
+            session,
+            "sticky://agent-command",
+            "apply",
+            fields,
+            &AtomicBool::new(false),
+        ),
+        Ok(ack) if ack.ok
+    )
+}
+
+fn release_note(host: &DesktopHost, note_id: &str, session: &str) {
+    let label = format!("sticky-note-{note_id}");
+    let mut fields = Map::new();
+    fields.insert("note_id".to_string(), json!(note_id));
+    let _ = host.agent_ui.roundtrip(
+        &label,
+        session,
+        "sticky://agent-command",
+        "release",
+        fields,
+        &AtomicBool::new(false),
+    );
+}
+
+fn ui_failure(ack: &crate::agent_ui::Ack) -> ControlError {
+    if ack.code == "BUSY" {
+        ControlError::new("BUSY", "the original window is busy")
+    } else if ack.code == "CONFLICT" {
+        ControlError::new("CONFLICT", "the original window kept its draft")
+    } else {
+        ControlError::new("UNAVAILABLE", "original window did not apply the request")
+    }
+}
+
+struct CanvasBounds {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    scale: f64,
+}
+
+fn canvas_bounds(host: &DesktopHost) -> Result<CanvasBounds, ControlError> {
+    let window = host
+        .kernel()
+        .context()
+        .window_pool
+        .get_active_window("screen-ink-canvas")
+        .ok_or_else(|| ControlError::new("UNAVAILABLE", "shared canvas has no draw acknowledgment yet"))?;
+    let monitors = host
+        .os_hal
+        .screen_capturer
+        .list_monitors()
+        .map_err(|_| ControlError::new("UNAVAILABLE", "display list is not available"))?;
+    let primary = monitors
+        .iter()
+        .find(|monitor| monitor.is_primary)
+        .or_else(|| monitors.first())
+        .ok_or_else(|| ControlError::new("UNAVAILABLE", "display list is not available"))?;
+    let scale = if primary.scale_factor > 0.1 { primary.scale_factor } else { 1.0 };
+    let logical_x = window.spec.x.unwrap_or(0.0);
+    let logical_y = window.spec.y.unwrap_or(0.0);
+    Ok(CanvasBounds {
+        x: f64::from(primary.x) + logical_x * scale,
+        y: f64::from(primary.y) + logical_y * scale,
+        width: window.spec.width * scale,
+        height: window.spec.height * scale,
+        scale,
+    })
+}
+
+fn canvas_local(px: f64, py: f64, bounds: &CanvasBounds) -> Result<(f64, f64), ControlError> {
+    if !px.is_finite() || !py.is_finite() || bounds.scale <= 0.0 {
+        return Err(ControlError::new("INVALID_REQUEST", "point is not finite"));
+    }
+    let x = (px - bounds.x) / bounds.scale;
+    let y = (py - bounds.y) / bounds.scale;
+    let logical_w = bounds.width / bounds.scale;
+    let logical_h = bounds.height / bounds.scale;
+    if x < 0.0 || y < 0.0 || x >= logical_w || y >= logical_h {
+        return Err(ControlError::new("INVALID_REQUEST", "point is outside the canvas"));
+    }
+    Ok((x, y))
+}
+
+fn logical_strokes(params: &Value, bounds: &CanvasBounds) -> Result<Value, ControlError> {
+    let strokes = params
+        .get("strokes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "strokes must be an array"))?;
+    let mut out = Vec::new();
+    for stroke in strokes {
+        let points = stroke
+            .get("points")
+            .and_then(Value::as_array)
+            .ok_or_else(|| ControlError::new("INVALID_REQUEST", "points must be an array"))?;
+        let mut logical = Vec::new();
+        for point in points {
+            let x = point.get("x").and_then(Value::as_f64).unwrap_or(f64::NAN);
+            let y = point.get("y").and_then(Value::as_f64).unwrap_or(f64::NAN);
+            let (x, y) = canvas_local(x, y, bounds)?;
+            logical.push(json!({"x": x, "y": y}));
+        }
+        out.push(json!({
+            "points": logical,
+            "color": stroke.get("color").cloned().unwrap_or(Value::Null),
+            "width": stroke.get("width").and_then(Value::as_f64).map(|width| width / bounds.scale),
+        }));
+    }
+    Ok(Value::Array(out))
+}
+
+fn ink_fields(strokes: Option<Value>, bounds: &CanvasBounds) -> Map<String, Value> {
+    let mut fields = Map::new();
+    if let Some(strokes) = strokes {
+        fields.insert("strokes".to_string(), strokes);
+    }
+    fields.insert(
+        "canvas_bounds".to_string(),
+        json!({
+            "x": bounds.x,
+            "y": bounds.y,
+            "width": bounds.width,
+            "height": bounds.height,
+            "scale_factor": bounds.scale,
+        }),
+    );
+    fields
 }
 
 fn guard(host: &DesktopHost, module_id: &str) -> Result<(), ControlError> {
@@ -570,26 +1197,6 @@ fn encode_png(pixels: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Control
     Ok(png)
 }
 
-fn artifact_path(host: &DesktopHost, artifact_id: &str) -> Result<PathBuf, ControlError> {
-    if artifact_id.len() != 32 || !artifact_id.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return Err(ControlError::new("INVALID_REQUEST", "artifact id is invalid"));
-    }
-    let relative = Path::new("agent-artifacts").join("screenshot").join(format!("{artifact_id}.png"));
-    let root = host
-        .kernel()
-        .context()
-        .app_data_dir
-        .join("agent-artifacts")
-        .join("screenshot");
-    let path = host.kernel().context().app_data_dir.join(&relative);
-    let root = std::fs::canonicalize(&root).unwrap_or(root);
-    let parent = path.parent().unwrap_or(Path::new(""));
-    if parent != root && std::fs::canonicalize(parent).ok().as_ref() != Some(&root) {
-        return Err(ControlError::new("INVALID_REQUEST", "artifact path is outside the artifact root"));
-    }
-    Ok(path)
-}
-
 fn preview(text: &str) -> String {
     let mut out = String::new();
     for ch in text.chars().take(PREVIEW_CHARS) {
@@ -684,6 +1291,7 @@ fn is_hex_color(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
     use serde_json::json;
 
     fn host() -> (tempfile::TempDir, DesktopHost) {
@@ -706,11 +1314,23 @@ mod tests {
             .unwrap()
             .iter()
             .all(|method| method.as_str().unwrap().starts_with("agent.")));
-        assert!(!snapshot["methods"]
+        let methods = snapshot["methods"].as_array().unwrap();
+        assert!(methods.iter().any(|method| method == "agent.ink.draw"));
+        assert!(methods.iter().any(|method| method == "agent.ink.snapshot"));
+        assert!(!methods.iter().any(|method| method == "agent.artifacts.read"));
+        assert!(snapshot["methods"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|method| method == "agent.ink.draw" || method == "agent.ink.snapshot"));
+            .any(|method| method == "agent.notes.search"));
+        let notes = snapshot["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|module| module["id"] == "sticky_note")
+            .unwrap();
+        assert_eq!(notes["agent_supported"], true);
+        assert_eq!(notes["agent_allowed"], false);
         let clipboard = snapshot["modules"]
             .as_array()
             .unwrap()
@@ -834,8 +1454,8 @@ mod tests {
         let snapshot = dispatch(&host, "agent.ink.snapshot", &json!({}), &AtomicBool::new(false)).unwrap_err();
         assert_eq!(snapshot.code, "UNAVAILABLE");
         assert!(snapshot.message.contains("pixels"));
-        let notes = dispatch(&host, "agent.notes.create", &json!({}), &AtomicBool::new(false)).unwrap_err();
-        assert_eq!(notes.code, "UNSUPPORTED");
+        let media = dispatch(&host, "agent.media.transcribe", &json!({}), &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(media.code, "UNSUPPORTED");
         let _ = host.kernel().shutdown();
     }
 
@@ -879,6 +1499,377 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(too_long.code, "INVALID_REQUEST");
+        let _ = host.kernel().shutdown();
+    }
+
+    #[test]
+    fn closed_notes_share_the_database_and_reject_stale_or_open_edits() {
+        let (_dir, host) = host();
+        let denied = dispatch(
+            &host,
+            "agent.notes.create",
+            &json!({"title": "synthetic"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(denied.code, "AGENT_ACCESS_DENIED");
+        grant(&host, "sticky_note");
+        let invalid = dispatch(&host, "agent.notes.create", &json!({}), &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(invalid.code, "INVALID_REQUEST");
+        let created = dispatch(
+            &host,
+            "agent.notes.create",
+            &json!({"title": "synthetic", "content_md": "alpha"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(created["is_open"], false);
+        let id = created["id"].as_str().unwrap();
+        let found = dispatch(
+            &host,
+            "agent.notes.search",
+            &json!({"query": "alpha", "limit": 20, "offset": 0}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert!(found.get("total").is_none());
+        assert_eq!(found["items"][0]["id"], id);
+        assert!(found["items"][0].get("content_md").is_none());
+        let read = dispatch(&host, "agent.notes.read", &json!({"id": id}), &AtomicBool::new(false)).unwrap();
+        assert_eq!(read["content_md"], "alpha");
+        let human = host
+            .sticky_note
+            .save_closed_content(
+                host.kernel().context(),
+                id,
+                None,
+                Some("human-edit"),
+                Some(read["updated_at"].as_i64().unwrap()),
+            )
+            .unwrap();
+        let mod_sticky_note::ClosedNoteSave::Applied(human_note) = human else {
+            panic!("human edit was not stored");
+        };
+        let conflict = dispatch(
+            &host,
+            "agent.notes.update",
+            &json!({"id": id, "expected_updated_at": read["updated_at"], "content_md": "lost"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(conflict.code, "CONFLICT");
+        assert_eq!(
+            host.sticky_note.get_note(host.kernel().context(), id).unwrap().unwrap().content_md,
+            "human-edit"
+        );
+        let updated = dispatch(
+            &host,
+            "agent.notes.update",
+            &json!({"id": id, "expected_updated_at": human_note.updated_at, "title": "synthetic-2"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(updated["title"], "synthetic-2");
+        assert_eq!(updated["content_md"], "human-edit");
+        assert_eq!(updated["display_sync"], "closed");
+        assert!(host.sticky_note.has_write_session(id));
+        let reread = dispatch(&host, "agent.notes.read", &json!({"id": id}), &AtomicBool::new(false)).unwrap();
+        assert_eq!(reread["content_md"], "human-edit");
+        assert_eq!(reread["title"], "synthetic-2");
+        let again = dispatch(
+            &host,
+            "agent.notes.update",
+            &json!({"id": id, "expected_updated_at": reread["updated_at"], "content_md": "second"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(again["content_md"], "second");
+        assert_eq!(again["display_sync"], "closed");
+        let stale = host
+            .sticky_note
+            .save_content(host.kernel().context(), id, None, "old-autosave", Some(1), None)
+            .unwrap();
+        assert!(!stale.applied);
+        let current = host.sticky_note.get_note(host.kernel().context(), id).unwrap().unwrap();
+        assert_eq!(current.content_md, "second");
+        let opened = dispatch(&host, "agent.notes.open", &json!({"id": id}), &AtomicBool::new(false)).unwrap();
+        assert_eq!(opened["is_open"], true);
+        assert_eq!(opened["window_label"], format!("sticky-note-{id}"));
+        let unread = dispatch(&host, "agent.notes.read", &json!({"id": id}), &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(unread.code, "UNAVAILABLE");
+        host.sticky_note.close_note(host.kernel().context(), id).unwrap();
+        let after_close = dispatch(&host, "agent.notes.read", &json!({"id": id}), &AtomicBool::new(false)).unwrap();
+        assert_eq!(after_close["content_md"], "second");
+        assert_eq!(after_close["is_open"], false);
+        let closed_edit = dispatch(
+            &host,
+            "agent.notes.update",
+            &json!({"id": id, "expected_updated_at": after_close["updated_at"], "title": "after-close"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(closed_edit["title"], "after-close");
+        assert_eq!(closed_edit["display_sync"], "closed");
+        assert!(host.sticky_note.has_write_session(id));
+        let huge = "x".repeat(256 * 1024 + 1);
+        let oversized = dispatch(
+            &host,
+            "agent.notes.create",
+            &json!({"title": "big", "content_md": huge}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(oversized.code, "INVALID_REQUEST");
+        let _ = host.kernel().shutdown();
+    }
+
+    struct SyncPtr(*const DesktopHost);
+    unsafe impl Send for SyncPtr {}
+    unsafe impl Sync for SyncPtr {}
+    impl SyncPtr {
+        fn host(&self) -> &DesktopHost {
+            unsafe { &*self.0 }
+        }
+    }
+
+    #[test]
+    fn open_editor_flushes_before_cas_and_blocks_the_old_autosave() {
+        let (_dir, host) = host();
+        grant(&host, "sticky_note");
+        let created = dispatch(
+            &host,
+            "agent.notes.create",
+            &json!({"title": "synthetic", "content_md": "alpha"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let id = created["id"].as_str().unwrap().to_string();
+        let original = created["updated_at"].as_i64().unwrap();
+        dispatch(&host, "agent.notes.open", &json!({"id": id}), &AtomicBool::new(false)).unwrap();
+        let page = host.sticky_note.begin_write_session(host.kernel().context(), &id).unwrap();
+        let ready = host.invoke_agent_ui(
+            &format!("sticky-note-{id}"),
+            "toolbox_agent_ui_ready",
+            json!({"kind": "notes", "note_id": id}),
+        );
+        assert!(ready.ok, "{:?}", ready.error);
+        let flushed = AtomicBool::new(false);
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let release_counter = released.clone();
+        let ui = std::sync::Arc::downgrade(&host.agent_ui);
+        let ptr = SyncPtr(&host as *const DesktopHost);
+        let note_id = id.clone();
+        host.agent_ui.set_emitter(std::sync::Arc::new(move |label, _event, payload| {
+            let host = ptr.host();
+            let operation = payload["operation"].as_str().unwrap_or("");
+            if operation == "release" { release_counter.fetch_add(1, Ordering::SeqCst); }
+            if operation == "prepare" && !flushed.swap(true, Ordering::AcqRel) {
+                host.sticky_note
+                    .save_content(
+                        host.kernel().context(),
+                        &note_id,
+                        None,
+                        "user-draft",
+                        Some(1),
+                        Some(page),
+                    )
+                    .unwrap();
+            }
+            let Some(ui) = ui.upgrade() else { return };
+            let _ = ui.handle(
+                label,
+                "toolbox_agent_ui_result",
+                &json!({
+                    "kind": "notes",
+                    "request_id": payload["request_id"],
+                    "session_id": payload["session_id"],
+                    "operation": operation,
+                    "ok": true,
+                    "result": {}
+                }),
+            );
+        }));
+        let conflict = dispatch(
+            &host,
+            "agent.notes.update",
+            &json!({"id": id, "expected_updated_at": original, "content_md": "agent-text"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(conflict.code, "CONFLICT");
+        assert_eq!(
+            host.sticky_note.get_note(host.kernel().context(), &id).unwrap().unwrap().content_md,
+            "user-draft"
+        );
+        let current = host.sticky_note.get_note(host.kernel().context(), &id).unwrap().unwrap();
+        let updated = dispatch(
+            &host,
+            "agent.notes.update",
+            &json!({"id": id, "expected_updated_at": current.updated_at, "content_md": "agent-text"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(updated["display_sync"], "applied");
+        assert_eq!(updated["content_md"], "agent-text");
+        assert_eq!(released.load(Ordering::SeqCst), 2, "conflict and update must both release the editor");
+        let reread = dispatch(&host, "agent.notes.read", &json!({"id": id}), &AtomicBool::new(false)).unwrap();
+        assert_eq!(reread["content_md"], "agent-text");
+        assert_eq!(released.load(Ordering::SeqCst), 3, "successful reads must release immediately");
+        assert_ne!(updated["write_session_id"].as_u64().unwrap(), page);
+        let stale = host
+            .sticky_note
+            .save_content(
+                host.kernel().context(),
+                &id,
+                None,
+                "old-autosave",
+                Some(2),
+                Some(page),
+            )
+            .unwrap();
+        assert!(!stale.applied);
+        assert_eq!(
+            host.sticky_note.get_note(host.kernel().context(), &id).unwrap().unwrap().content_md,
+            "agent-text"
+        );
+        let _ = host.kernel().shutdown();
+    }
+
+    #[test]
+    fn canvas_ack_transforms_points_and_late_replies_do_not_apply() {
+        let (x, y) = canvas_local(
+            -1916.0,
+            4.0,
+            &CanvasBounds { x: -1920.0, y: 0.0, width: 1920.0, height: 1080.0, scale: 2.0 },
+        )
+        .unwrap();
+        assert_eq!((x, y), (2.0, 2.0));
+        let (_dir, host) = host();
+        grant(&host, "screen_ink");
+        dispatch(&host, "agent.ink.start", &json!({}), &AtomicBool::new(false)).unwrap();
+        let wrong = host.invoke_agent_ui("dashboard", "toolbox_agent_ui_ready", json!({"kind": "ink"}));
+        assert!(!wrong.ok);
+        let ready = host.invoke_agent_ui("screen-ink-canvas", "toolbox_agent_ui_ready", json!({"kind": "ink"}));
+        assert!(ready.ok, "{:?}", ready.error);
+        host.agent_ui.set_pointer_active(true);
+        let busy = dispatch(
+            &host,
+            "agent.ink.draw",
+            &json!({"strokes": [{"points": [{"x": 4.0, "y": 6.0}], "color": "#112233", "width": 2.0}]}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(busy.code, "BUSY");
+        host.agent_ui.set_pointer_active(false);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_emit = seen.clone();
+        let ui = std::sync::Arc::downgrade(&host.agent_ui);
+        host.agent_ui.set_emitter(std::sync::Arc::new(move |label, _event, payload| {
+            seen_emit.lock().unwrap().push(payload.clone());
+            let Some(ui) = ui.upgrade() else { return };
+            let operation = payload["operation"].as_str().unwrap_or("");
+            let result = if operation == "draw" {
+                json!({"applied": 1})
+            } else {
+                json!({})
+            };
+            let _ = ui.handle(
+                label,
+                "toolbox_agent_ui_result",
+                &json!({
+                    "kind": "ink",
+                    "request_id": payload["request_id"],
+                    "session_id": payload["session_id"],
+                    "operation": operation,
+                    "ok": true,
+                    "result": result
+                }),
+            );
+        }));
+        let drawn = dispatch(
+            &host,
+            "agent.ink.draw",
+            &json!({"strokes": [{"points": [{"x": 4.0, "y": 6.0}], "color": "#112233", "width": 2.0}]}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(drawn["applied"], 1);
+        let payload = seen.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(payload["strokes"][0]["points"][0]["x"], 2.0);
+        assert_eq!(payload["strokes"][0]["points"][0]["y"], 3.0);
+        assert_eq!(payload["strokes"][0]["width"], 1.0);
+        assert_eq!(payload["canvas_bounds"]["scale_factor"], 2.0);
+        let duplicate = host.invoke_agent_ui(
+            "screen-ink-canvas",
+            "toolbox_agent_ui_result",
+            json!({
+                "kind": "ink",
+                "request_id": payload["request_id"],
+                "session_id": payload["session_id"],
+                "operation": "draw",
+                "ok": true,
+                "result": {"applied": 1}
+            }),
+        );
+        assert_eq!(duplicate.data.unwrap()["acknowledged"], false);
+        host.agent_ui.set_timeout_for_test(std::time::Duration::from_millis(40));
+        host.agent_ui.set_emitter(std::sync::Arc::new(|_label, _event, _payload| {}));
+        let late = dispatch(&host, "agent.ink.clear", &json!({}), &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(late.code, "UNAVAILABLE");
+        let _ = host.kernel().shutdown();
+    }
+
+    #[test]
+    fn artifact_chunks_follow_the_grant_epoch_and_late_cancel_keeps_commits() {
+        let (_dir, host) = host();
+        grant(&host, "screenshot");
+        grant(&host, "clipboard");
+        host.agent_flip_cancel_on_commit.store(true, Ordering::Release);
+        let cancel = AtomicBool::new(false);
+        let written = dispatch(
+            &host,
+            "agent.clipboard.write_text",
+            &json!({"text": "committed-after-cancel"}),
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(written["recorded"], true);
+        assert!(cancel.load(Ordering::Acquire));
+        assert_eq!(host.agent_clipboard_writes.lock().len(), 1);
+        let captured = dispatch(
+            &host,
+            "agent.screenshot.capture",
+            &json!({"monitor_id": 1, "region": {"x": 0, "y": 0, "width": 8, "height": 8}}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(captured["module_id"], "screenshot");
+        let revision = captured["revision"].as_u64().unwrap();
+        let id = captured["artifact_id"].as_str().unwrap();
+        let chunk = dispatch(
+            &host,
+            "agent.artifacts.read",
+            &json!({"artifact_id": id, "module_id": "screenshot", "offset": 0, "length": 8}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(chunk["revision"], revision);
+        assert_eq!(chunk["mime_type"], "image/png");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(chunk["data_base64"].as_str().unwrap())
+        .unwrap();
+        assert_eq!(bytes.len(), 8);
+        assert_eq!(chunk["eof"], false);
+        host.kernel().set_agent_access("screenshot", false).unwrap();
+        host.kernel().set_agent_access("screenshot", true).unwrap();
+        let revived = dispatch(
+            &host,
+            "agent.artifacts.read",
+            &json!({"artifact_id": id, "module_id": "screenshot", "offset": 0, "length": 8}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(revived.code, "UNAVAILABLE");
         let _ = host.kernel().shutdown();
     }
 }

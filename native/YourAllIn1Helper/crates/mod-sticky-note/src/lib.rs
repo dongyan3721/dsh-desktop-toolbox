@@ -63,6 +63,21 @@ pub struct StickyNoteWrite {
     pub note: StickyNoteRecord,
 }
 
+/// Search row. The preview is bounded; the full Markdown body is not included.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StickyNoteSummary {
+    pub id: String,
+    pub title: String,
+    pub preview: String,
+    pub updated_at: i64,
+    pub is_open: bool,
+    pub pos_x: Option<i32>,
+    pub pos_y: Option<i32>,
+    pub width: u32,
+    pub height: u32,
+    pub is_pinned: bool,
+}
+
 /// Headless create/update result. `Conflict` and `Missing` leave the stored row unchanged.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClosedNoteSave {
@@ -218,6 +233,8 @@ struct WriteBook {
     flushing: Mutex<HashSet<String>>,
     /// 串行化停用与退出冲刷，避免两个生命周期入口同时等待同一页面的确认。
     flush_serial: Mutex<()>,
+    /// 人和 Agent 对同一便笺的写入共用这把锁，避免 CAS 和自动保存交错。
+    note_serial: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 /// 页面必须在关闭窗口前完成落盘；超时则保留窗口和内容，交由用户处理后重试。
@@ -237,6 +254,7 @@ impl Default for StickyNoteModule {
                 next_session: AtomicU64::new(0),
                 flushing: Mutex::new(HashSet::new()),
                 flush_serial: Mutex::new(()),
+                note_serial: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -246,6 +264,22 @@ impl StickyNoteModule {
     /// 创建便笺模块实例
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 同一便笺的数据库写入和会话轮换按固定顺序持有这把锁。
+    pub fn note_lock(&self, note_id: &str) -> Arc<Mutex<()>> {
+        let mut map = self
+            .writes
+            .note_serial
+            .lock()
+            .unwrap_or_else(|err| err.into_inner());
+        map.entry(note_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    pub fn has_write_session(&self, note_id: &str) -> bool {
+        self.lock_writes().contains_key(note_id)
     }
 
     fn lock_writes(&self) -> std::sync::MutexGuard<'_, HashMap<String, NoteWriteCursor>> {
@@ -738,6 +772,88 @@ impl StickyNoteModule {
         })
     }
 
+    /// Persisted summaries only. Callers must not treat the preview as unsaved editor text.
+    pub fn search_summaries(
+        &self,
+        ctx: &ModuleContext,
+        query: Option<&str>,
+        limit: usize,
+        offset: usize,
+    ) -> CoreResult<Vec<StickyNoteSummary>> {
+        let pattern = query.map(like_contains);
+        ctx.db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT id, title, substr(content_md, 1, 512), updated_at, is_open,
+                        pos_x, pos_y, width, height, is_pinned
+                 FROM sticky_notes
+                 WHERE (?1 IS NULL OR title LIKE ?1 ESCAPE '\\' OR content_md LIKE ?1 ESCAPE '\\')
+                 ORDER BY updated_at DESC
+                 LIMIT ?2 OFFSET ?3",
+            )?;
+            let rows = stmt.query_map(params![pattern, limit as i64, offset as i64], |row| {
+                let is_open: i64 = row.get(4)?;
+                let is_pinned: i64 = row.get(9)?;
+                let raw: String = row.get(2)?;
+                Ok(StickyNoteSummary {
+                    id: row.get(0)?,
+                    title: row.get(1)?,
+                    preview: preview_chars(&raw, 120),
+                    updated_at: row.get(3)?,
+                    is_open: is_open != 0,
+                    pos_x: row.get(5)?,
+                    pos_y: row.get(6)?,
+                    width: row.get(7)?,
+                    height: row.get(8)?,
+                    is_pinned: is_pinned != 0,
+                })
+            })?;
+            let mut notes = Vec::new();
+            for row in rows {
+                notes.push(row?);
+            }
+            Ok(notes)
+        })
+    }
+
+    /// CAS plus a new write cursor. The cursor only rejects an older autosave.
+    /// It does not mean an editor window is open or registered.
+    pub fn commit_agent_update(
+        &self,
+        ctx: &ModuleContext,
+        note_id: &str,
+        title: Option<&str>,
+        content_md: Option<&str>,
+        expected_updated_at: i64,
+    ) -> CoreResult<(ClosedNoteSave, Option<u64>)> {
+        let note_lock = self.note_lock(note_id);
+        let _note_guard = note_lock.lock().unwrap_or_else(|err| err.into_inner());
+        let outcome = self.save_closed_content(
+            ctx,
+            note_id,
+            title,
+            content_md,
+            Some(expected_updated_at),
+        )?;
+        let session = if matches!(outcome, ClosedNoteSave::Applied(_)) {
+            Some(self.begin_write_session(ctx, note_id)?)
+        } else {
+            None
+        };
+        Ok((outcome, session))
+    }
+
+    /// Focus an open note without moving its conflict token. A closed note is opened once.
+    pub fn show_note(&self, ctx: &ModuleContext, note_id: &str) -> CoreResult<StickyNoteRecord> {
+        let Some(record) = self.get_note(ctx, note_id)? else {
+            return Err(CoreError::Internal(anyhow::anyhow!("note was not found")));
+        };
+        if record.is_open {
+            self.spawn_note_window(ctx, &record)?;
+            return Ok(record);
+        }
+        self.open_note(ctx, note_id)
+    }
+
     /// 为一次新打开的 WebView 分配写入会话，并把该便笺的三类序号清零。
     ///
     /// 会话号在进程内递增。旧会话此后即使带着更大的 `write_seq` 也不能覆盖新会话。
@@ -786,6 +902,8 @@ impl StickyNoteModule {
         write_seq: Option<u64>,
         session_id: Option<u64>,
     ) -> CoreResult<StickyNoteWrite> {
+        let note_lock = self.note_lock(note_id);
+        let _note_guard = note_lock.lock().unwrap_or_else(|err| err.into_inner());
         let mut writes = self.lock_writes();
         let gate = Self::prepare_write(
             &mut writes,
@@ -801,19 +919,25 @@ impl StickyNoteModule {
 
         let now = Utc::now().timestamp_millis();
         let saved = ctx.db.with_conn(|conn| {
+            let previous: i64 = conn.query_row(
+                "SELECT updated_at FROM sticky_notes WHERE id = ?1",
+                params![note_id],
+                |row| row.get(0),
+            )?;
+            let next = next_conflict_token(previous, now)?;
             let affected = if let Some(new_title) = title {
                 conn.execute(
                     "UPDATE sticky_notes
                      SET title = ?1, content_md = ?2, updated_at = ?3
                      WHERE id = ?4",
-                    params![new_title, content_md, now, note_id],
+                    params![new_title, content_md, next, note_id],
                 )?
             } else {
                 conn.execute(
                     "UPDATE sticky_notes
                      SET content_md = ?1, updated_at = ?2
                      WHERE id = ?3",
-                    params![content_md, now, note_id],
+                    params![content_md, next, note_id],
                 )?
             };
 
@@ -853,6 +977,8 @@ impl StickyNoteModule {
         write_seq: Option<u64>,
         session_id: Option<u64>,
     ) -> CoreResult<StickyNoteWrite> {
+        let note_lock = self.note_lock(note_id);
+        let _note_guard = note_lock.lock().unwrap_or_else(|err| err.into_inner());
         let mut writes = self.lock_writes();
         let gate = Self::prepare_write(
             &mut writes,
@@ -919,6 +1045,8 @@ impl StickyNoteModule {
         write_seq: Option<u64>,
         session_id: Option<u64>,
     ) -> CoreResult<StickyNoteWrite> {
+        let note_lock = self.note_lock(note_id);
+        let _note_guard = note_lock.lock().unwrap_or_else(|err| err.into_inner());
         let mut writes = self.lock_writes();
         let gate = Self::prepare_write(
             &mut writes,
@@ -1061,6 +1189,22 @@ impl StickyNoteModule {
             updated_at: row.get(11)?,
         })
     }
+}
+
+fn like_contains(query: &str) -> String {
+    let mut out = String::from('%');
+    for ch in query.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out.push('%');
+    out
+}
+
+fn preview_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
 }
 
 impl AppModule for StickyNoteModule {

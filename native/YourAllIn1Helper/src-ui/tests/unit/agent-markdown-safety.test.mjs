@@ -36,6 +36,7 @@ function assertSafe(output, label) {
 }
 
 const maliciousFixtures = [
+  ['oversized numeric entity cannot crash preview', '<a href="&#999999999999999999999;">x</a>'],
   ['script executes nothing', '<script>window.__TAURI__.core.invoke("kernel_shutdown")</script>'],
   ['img onerror dropped', '<img src=x onerror="window.__TAURI__.core.invoke(\'kernel_shutdown\')">'],
   ['javascript href dropped', '<a href="javascript:alert(1)">click</a>'],

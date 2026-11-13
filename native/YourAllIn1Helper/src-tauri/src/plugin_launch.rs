@@ -16,10 +16,17 @@ pub const AGENT_DATA_METHODS: &[&str] = &[
     "agent.ink.stop",
     "agent.ink.passthrough",
     "agent.ink.clear",
+    "agent.ink.draw",
+    "agent.ink.snapshot",
     "agent.usage.status",
     "agent.usage.overview",
     "agent.usage.apps",
     "agent.usage.hourly",
+    "agent.notes.search",
+    "agent.notes.read",
+    "agent.notes.create",
+    "agent.notes.update",
+    "agent.notes.open",
 ];
 
 pub const DESKTOP_CAPABILITIES: &[&str] = &[
@@ -38,10 +45,18 @@ pub const DESKTOP_CAPABILITIES: &[&str] = &[
     "agent.ink.stop",
     "agent.ink.passthrough",
     "agent.ink.clear",
+    "agent.ink.draw",
+    "agent.ink.snapshot",
     "agent.usage.status",
     "agent.usage.overview",
     "agent.usage.apps",
     "agent.usage.hourly",
+    "agent.notes.search",
+    "agent.notes.read",
+    "agent.notes.create",
+    "agent.notes.update",
+    "agent.notes.open",
+    "agent.artifacts.read",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

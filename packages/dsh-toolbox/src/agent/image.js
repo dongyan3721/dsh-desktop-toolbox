@@ -1,7 +1,7 @@
 import { agentError, throwIfAborted } from './common.js'
 
 export const MAX_AGENT_IMAGE_BYTES = 16 * 1024 * 1024
-export const MAX_AGENT_IMAGE_PIXELS = 64_000_000
+export const MAX_AGENT_IMAGE_PIXELS = 16_000_000
 export const MAX_ARTIFACT_ID_SCALARS = 200
 
 const SUPPORTED_IMAGE_TYPES = new Set([
@@ -148,13 +148,25 @@ export function createAgentImagePublisher({ attachments, artifactReader }) {
       throwIfAborted(signal)
       const artifact = validateArtifactDescriptor(descriptor)
 
-      await ensureAuthorized(signal)
+      const initialAccess = await ensureAuthorized(signal)
+      // Artifact revision is a per-module grant epoch. Snapshot revision is
+      // the global metadata revision: their counters must not be equated.
+      const revision = descriptor.revision
+      const publicationRevision = initialAccess?.snapshot?.revision
+      if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) throw internal('invalid artifact authorization revision')
+      if (descriptor.module_id !== undefined && descriptor.module_id !== moduleId) throw internal('artifact belongs to another module')
+      const recheck = async () => {
+        const access = await ensureAuthorized(signal)
+        if (publicationRevision !== undefined && access?.snapshot?.revision !== undefined && access.snapshot.revision !== publicationRevision) {
+          throw agentError('AGENT_ACCESS_DENIED', 'image authorization changed during publication')
+        }
+      }
       throwIfAborted(signal)
-      const loaded = await artifactReader.read(artifact, { signal })
+      const loaded = await artifactReader.read(artifact, { signal, moduleId, revision })
       throwIfAborted(signal)
       const data = normalizeLoadedImage(loaded, artifact)
 
-      await ensureAuthorized(signal)
+      await recheck()
       throwIfAborted(signal)
       const ref = await attachments.saveImage({
         data,
@@ -164,7 +176,7 @@ export function createAgentImagePublisher({ attachments, artifactReader }) {
       throwIfAborted(signal)
       const image = normalizeImageRef(ref)
 
-      await ensureAuthorized(signal)
+      await recheck()
       throwIfAborted(signal)
       return { artifact, image }
     },

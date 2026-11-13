@@ -503,9 +503,7 @@ function makeAgentStroke(points: InkPoint[], color: string, width: number): InkS
 }
 
 /**
- * 把事件里的笔画归一到画布逻辑坐标。
- * 原生 logical_strokes 已把物理桌面坐标预转换为逻辑坐标（在画布范围内直接使用）；
- * 若载荷仍是物理坐标（含负原点），则按 canvas_bounds 的 scale_factor 转换并同步缩放线宽。
+ * 原生统一把点与线宽转换为逻辑像素；前端只校验，不猜测/再次缩放。
  */
 function normalizeAgentStroke(raw: unknown, bounds: AgentCanvasBounds): InkStroke | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -515,29 +513,18 @@ function normalizeAgentStroke(raw: unknown, bounds: AgentCanvasBounds): InkStrok
   const width = Number(record.width);
   const color = typeof record.color === 'string' && record.color.length <= 32 ? record.color : '#000000';
   const asLogical: InkPoint[] = [];
-  const asPhysical: InkPoint[] = [];
   for (const p of rawPoints) {
     const point = p as Record<string, unknown> | null;
     const px = Number(point?.x);
     const py = Number(point?.y);
     if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
     asLogical.push({ x: px, y: py, pressure: 0.5, timestamp: Date.now() });
-    asPhysical.push({
-      x: (px - bounds.x) / bounds.scale,
-      y: (py - bounds.y) / bounds.scale,
-      pressure: 0.5,
-      timestamp: Date.now(),
-    });
   }
   const logicalW = bounds.width / bounds.scale;
   const logicalH = bounds.height / bounds.scale;
-  const inside = (pt: InkPoint) => pt.x >= 0 && pt.y >= 0 && pt.x <= logicalW && pt.y <= logicalH;
+  const inside = (pt: InkPoint) => pt.x >= 0 && pt.y >= 0 && pt.x < logicalW && pt.y < logicalH;
   if (Number.isFinite(width) && width > 0 && asLogical.every(inside)) {
     return makeAgentStroke(asLogical, color, width);
-  }
-  const physicalWidth = width / bounds.scale;
-  if (Number.isFinite(physicalWidth) && physicalWidth > 0 && asPhysical.every(inside)) {
-    return makeAgentStroke(asPhysical, color, physicalWidth);
   }
   return null;
 }

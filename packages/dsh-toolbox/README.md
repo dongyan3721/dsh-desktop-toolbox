@@ -1,15 +1,17 @@
-# DSH Toolbox human preview
+# DSH Toolbox first beta
 
-Windows x64 原桌面工具箱的人用迁移预览。兼容 Harness `0.2.2-rc.1`、Cordis `4.1.0`、Node 24。
+beta.4 让桌面组件在没有 `DSH_HOME` 时自行使用用户目录下的绝对数据路径。原生程序沿用 beta.3。rc.3 运行兼容性仍由使用者验证，本次未做安装或启动测试。
 
-`0.1.0-alpha.6` 默认 Bundle `human.patch.yml` 启动原 Tauri 桌面，提供 `toolboxDesktop` 服务；另安装同版本 `dsh-toolbox-client`，在 Harness 侧栏显示“工具箱”。点击入口打开原主窗，便笺、偏好与原快捷键控件复用原程序。默认人用装配不注册模型工具，不需要模型请求。
+`0.1.0-beta.4`：Windows x64 原桌面工具箱迁移版。声明支持 Harness `0.2.2-rc.1` / `0.2.2-rc.3`、Cordis `4.1.0`、Node 24。与同版本 `dsh-toolbox-client` 一起安装，侧栏“工具箱”打开原 Tauri 主窗；人的操作无需模型请求。
 
-新配置仅启用便笺，其默认快捷键仍为未分配；其他模块保留原界面与默认键定义，需用户按计划启用和验收。脚本、密码本和使用时间无需开放给 Agent。旧项目数据不自动导入；没有读取旧数据库、开启自启动、运行更新器或填充演示数据。
+保留原十模块界面、窗口、托盘与快捷键。新配置只启用便笺；其他功能按需开启。功能启停与“允许 Agent 访问”独立，Agent 授权默认关闭。截图、剪贴板、屏幕注释、应用使用时长、便笺五项可在明确授权后与 Agent 共享同一桌面内核及数据。脚本、多媒体、窗口置顶、翻译、密码本不支持 Agent。
 
-配置必须指定绝对 `dataDir`。人用 Bundle 默认读取 `DSH_TOOLBOX_DATA_DIR`，否则使用 `DSH_HOME/toolbox-desktop-data`。开发验收把 `DSH_HOME` 和 Electron 用户目录放在 D 盘隔离目录。桌面程序、WebView、日志和临时文件归该目录；当前实现拒绝 AppData 内的数据目录。原生文件使用独立 SHA-256 清单校验；`nativeExecutable` 仅供可信部署显式覆盖。
+便笺支持搜索、读取、创建、版本检查更新与打开原窗口；打开中的编辑器先同步草稿，再应用更新，冲突返回失败。截图与画布快照通过 Harness 图像附件交付；画布快照只有透明墨迹。撤权、关闭功能、卸载或断连后旧工具不能继续访问。取消发生在提交之后时，保留已提交结果；不自动重试未知结果。
 
-`dsh-toolbox/desktop` 为独立桌面服务；`dsh-toolbox/human-entry` 为可见入口的窄 RPC 适配。卸载会等待便笺保存、停止自己拥有的进程并保留数据目录。无法确认保存或必须强制终止时返回明确失败。关闭主窗保留托盘与快捷键；再次打开复用窗口。
+默认 Bundle 是 `human.patch.yml`；包根和 `dsh-toolbox/desktop` 均导出同一桌面服务，`dsh-toolbox/agent` 只提供上述五项动态工具，`dsh-toolbox/human-entry` 提供人用入口。新版本不再提供旧 headless Agent 产品入口；历史 alpha 归档保持冻结，不要将旧显式 patch 用于新包。
 
-旧 headless 入口仍在包根 `lib/index.js` 和显式 `cordis.patch.yml`，供已验证的便笺/图片 Agent 能力单独选择。不要让两种内核运行在同一数据目录。图片能力仍需显式启用、读写根、宿主文件策略与原生 capability；`OUTCOME_UNKNOWN` 后先核查实际结果，不自动重试。
+数据目录必须为绝对路径。显式 `dataDir` 优先，其次是 `DSH_TOOLBOX_DATA_DIR`；两者都为空时用 `DSH_HOME/toolbox-desktop-data`。普通客户端未设置 `DSH_HOME` 时，桌面组件自己使用用户主目录下的 `.dsh/toolbox-desktop-data`。相对的显式目录会被拒绝。构建、隔离测试和预览数据均位于 D 盘；原 C 盘项目只读，旧数据不会自动导入。运行无需 Rust 或原项目。原生文件使用 SHA-256 清单校验，无安装期编译脚本。
 
-没有安装期脚本。工作区 `scripts/Build-Package.ps1` 构建两个本地包并拒绝覆盖同版本归档。冻结 alpha.2 包不含新桌面功能。该版本是本机集成预览；完整十模块、凭据人工验收、旧数据导入及第三方许可审计仍按迁移计划推进。实际已测范围见工作区 `docs/`，源码保留不等于 GUI 已验收。
+关闭主窗保留托盘与快捷键，再打开复用窗口。卸载停止自有进程并保留数据；无法确认保存或必须强制结束时报告失败。Windows 命令行升级前从“应用 → 退出”正常退出 Harness，避免运行中 exe 的文件锁。保留登录及数据目录后安装新包、重新打开。
+
+本机 beta 的已测范围、命令和限制见工作区 `docs/BETA1_ACCEPTANCE.zh-CN.md`。密码本和系统认证需本人手工验收；翻译需自行配置服务；不承诺多显示器/各缩放比例、个人旧数据迁移及所有十模块完整对等。外部分发前仍需兼容性与许可审计。
