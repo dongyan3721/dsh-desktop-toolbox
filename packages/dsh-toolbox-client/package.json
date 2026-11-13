@@ -1,6 +1,6 @@
 {
   "name": "dsh-toolbox-client",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Human-visible Harness sidebar entry for DSH Toolbox",
   "private": true,
   "type": "module",
@@ -27,7 +27,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
-    "dsh-toolbox": "0.1.0-beta.2"
+    "dsh-toolbox": "0.1.0-beta.3"
   },
   "license": "MIT"
 }

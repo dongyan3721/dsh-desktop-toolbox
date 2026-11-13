@@ -1,10 +1,14 @@
 {
   "name": "dsh-toolbox",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Original human desktop toolbox for DeepSeek Harness",
   "type": "module",
-  "os": ["win32"],
-  "cpu": ["x64"],
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
@@ -12,14 +16,24 @@
     "./agent": "./lib/agent/index.js",
     "./human-entry": "./lib/human-entry/host.js"
   },
-  "files": ["lib", "resources", "cordis.patch.yml", "human.patch.yml", "README.md"],
-  "dsh": { "bundle": { "patch": "./human.patch.yml" } },
+  "files": [
+    "lib",
+    "resources",
+    "cordis.patch.yml",
+    "human.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./human.patch.yml"
+    }
+  },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
-    "@deepseek-ai/dsh-tools": "0.2.2-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1 || 0.2.2-rc.3",
     "@deepseek-ai/schemastery": "~3.19.0",
-    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.1",
-    "@deepseek-ai/dsh-sandbox": "0.2.2-rc.1"
+    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.1 || 0.2.2-rc.3",
+    "@deepseek-ai/dsh-sandbox": "0.2.2-rc.1 || 0.2.2-rc.3"
   },
   "license": "MIT"
 }
