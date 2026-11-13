@@ -1133,8 +1133,14 @@ pub(crate) fn show_passive_window(window: &tauri::WebviewWindow) -> CoreResult<(
     window.show().map_err(to_core_error)
 }
 
-/// 启动系统剪贴板实时后台监听器（支持文本与图片双通道实时自动捕获）
+/// 启动系统剪贴板实时后台监听器（支持文本与图片双通道实时自动捕获）。
+/// 整个进程只保留一条监听线程。模块关闭时循环里的启用检查会立刻停采，重新开启后同一条线程恢复。
 fn start_clipboard_listener(app: &AppHandle) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static STARTED: AtomicBool = AtomicBool::new(false);
+    if STARTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let Some(host) = app
         .try_state::<Arc<DesktopHost>>()
         .map(|state| state.inner().clone())
@@ -1556,15 +1562,7 @@ pub fn run() {
             // 个别按键被其他程序占用时继续启动，失败项已记录并在对应功能页显示。
             register_global_shortcuts(app.handle())?;
             setup_tray(app.handle())?;
-            let capture_enabled = !plugin
-                || app
-                    .state::<Arc<DesktopHost>>()
-                    .kernel()
-                    .registry()
-                    .is_enabled("clipboard");
-            if capture_enabled {
-                start_clipboard_listener(app.handle());
-            }
+            start_clipboard_listener(app.handle());
             let translator_enabled = !plugin
                 || app
                     .state::<Arc<DesktopHost>>()
