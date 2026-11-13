@@ -623,4 +623,18 @@ mod tests {
         assert_eq!(control.shutdowns.load(Ordering::SeqCst), 1);
         assert_eq!(control.finishes.load(Ordering::SeqCst), 0);
     }
+
+    #[test]
+    fn human_grant_command_is_not_a_control_method() {
+        let control = fake(false);
+        let error = call_method(
+            control.as_ref(),
+            "kernel_set_agent_access",
+            &json!({"module_id": "clipboard", "allowed": true, "actor": "human"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "UNSUPPORTED");
+        assert_eq!(control.opens.lock().unwrap().len(), 0);
+    }
 }

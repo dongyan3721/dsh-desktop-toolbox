@@ -218,8 +218,94 @@ impl DesktopHost {
                 }
                 Ok(self.module_catalog())
             }
+            "kernel_set_agent_access" => {
+                let obj = args.as_object().ok_or_else(|| {
+                    CoreError::Config("agent access params must be an object".into())
+                })?;
+                if obj.len() != 2 || !obj.contains_key("module_id") || !obj.contains_key("allowed")
+                {
+                    return Err(CoreError::Config(
+                        "agent access accepts only module_id and allowed".into(),
+                    ));
+                }
+                let id = args
+                    .get("module_id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| CoreError::Config("module_id must be a string".into()))?;
+                let allowed = args
+                    .get("allowed")
+                    .and_then(Value::as_bool)
+                    .ok_or_else(|| CoreError::Config("allowed must be a boolean".into()))?;
+                self.kernel.set_agent_access(id, allowed)?;
+                Ok(self.module_catalog())
+            }
 
             _ => Err(CoreError::Config(format!("Unknown IPC command: {}", cmd))),
         }
+    }
+}
+
+#[cfg(test)]
+mod agent_access_ipc_tests {
+    use super::*;
+
+    fn entry<'a>(catalog: &'a Value, id: &str) -> &'a Value {
+        catalog
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn human_grant_is_separate_from_enablement_and_history_remains_reachable() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = crate::DesktopHost::bootstrap(dir.path(), true).unwrap();
+        let listed = host.invoke_ipc("kernel_list_modules", json!({}));
+        assert!(listed.ok);
+        let catalog = listed.data.unwrap();
+        assert_eq!(entry(&catalog, "clipboard")["agent_supported"], true);
+        assert_eq!(entry(&catalog, "clipboard")["agent_allowed"], false);
+        assert_eq!(entry(&catalog, "clipboard")["agent_effective"], false);
+        assert_eq!(entry(&catalog, "sticky_note")["agent_supported"], false);
+        assert_eq!(entry(&catalog, "media_proc")["agent_supported"], false);
+
+        let forged = host.invoke_ipc(
+            "kernel_set_agent_access",
+            json!({"module_id": "sticky_note", "allowed": true}),
+        );
+        assert!(!forged.ok);
+        let actor = host.invoke_ipc(
+            "kernel_set_agent_access",
+            json!({"module_id": "clipboard", "allowed": true, "actor": "human"}),
+        );
+        assert!(!actor.ok);
+
+        let granted = host.invoke_ipc(
+            "kernel_set_agent_access",
+            json!({"module_id": "clipboard", "allowed": true}),
+        );
+        assert!(granted.ok);
+        let catalog = granted.data.unwrap();
+        assert_eq!(entry(&catalog, "clipboard")["enabled"], true);
+        assert_eq!(entry(&catalog, "clipboard")["agent_allowed"], true);
+        assert_eq!(entry(&catalog, "clipboard")["agent_effective"], true);
+        assert_eq!(entry(&catalog, "screenshot")["agent_allowed"], false);
+        assert!(host.kernel().context().config.read().usage_tracking.enabled);
+
+        let history = host.invoke_ipc("clipboard_list_items", json!({"limit": 1}));
+        assert!(history.ok, "{:?}", history.error);
+
+        host.kernel().set_module_enabled("clipboard", false).unwrap();
+        let after_disable = host.invoke_ipc("kernel_list_modules", json!({})).data.unwrap();
+        assert_eq!(entry(&after_disable, "clipboard")["enabled"], false);
+        assert_eq!(entry(&after_disable, "clipboard")["agent_allowed"], true);
+        assert_eq!(entry(&after_disable, "clipboard")["agent_effective"], false);
+        assert_eq!(
+            app_core::agent_error_code(&host.kernel().authorize_agent("clipboard").unwrap_err()),
+            Some("MODULE_DISABLED")
+        );
+        let _ = host.kernel().shutdown();
     }
 }
