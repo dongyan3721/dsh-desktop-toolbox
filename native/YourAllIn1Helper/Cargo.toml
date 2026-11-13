@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/app-core",
+    "crates/dsh-bridge",
     "crates/os-hal",
     "crates/mod-screenshot",
     "crates/mod-clipboard",

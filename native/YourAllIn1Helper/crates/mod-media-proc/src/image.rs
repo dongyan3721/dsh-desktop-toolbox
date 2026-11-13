@@ -1,5 +1,5 @@
 use crate::{
-    output::finalize_output,
+    output::finalize_output_with_hook,
     types::{ImageConvertOptions, ImageOutputFormat, MediaJob},
 };
 use app_core::{CoreError, CoreResult};
@@ -16,6 +16,17 @@ pub fn process(
     options: &ImageConvertOptions,
     partial: &Path,
     cancelled: &AtomicBool,
+) -> CoreResult<()> {
+    process_with_hook(job, options, partial, cancelled, &|| {}, &|| {})
+}
+
+pub(crate) fn process_with_hook(
+    job: &MediaJob,
+    options: &ImageConvertOptions,
+    partial: &Path,
+    cancelled: &AtomicBool,
+    before_publish: &dyn Fn(),
+    after_publish: &dyn Fn(),
 ) -> CoreResult<()> {
     check_cancelled(cancelled)?;
     options.validate()?;
@@ -76,12 +87,14 @@ pub fn process(
         }
     }
     writer.flush()?;
+    drop(writer);
+    before_publish();
     check_cancelled(cancelled)?;
     let output = job
         .output_path
         .as_ref()
         .ok_or_else(|| CoreError::Config("missing image output path".into()))?;
-    finalize_output(partial, output)
+    finalize_output_with_hook(partial, output, after_publish)
 }
 
 fn check_cancelled(cancelled: &AtomicBool) -> CoreResult<()> {

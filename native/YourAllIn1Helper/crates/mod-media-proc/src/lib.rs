@@ -3,6 +3,7 @@
 
 mod av;
 pub mod config;
+mod exact;
 mod image;
 mod output;
 mod semaphore;
@@ -11,6 +12,10 @@ mod types;
 pub use config::MediaProcConfig;
 pub use types::{
     AvJobRequest, AvOperation, ImageConvertOptions, ImageOutputFormat, MediaJob, MediaJobStatus,
+};
+
+pub use exact::{
+    convert_image_exact, convert_image_exact_with, ExactImageRequest, ExactImageStatus,
 };
 
 use app_core::{

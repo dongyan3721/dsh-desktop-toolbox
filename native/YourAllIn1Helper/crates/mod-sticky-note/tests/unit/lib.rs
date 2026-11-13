@@ -731,3 +731,100 @@ fn multi_note_flush_failure_releases_every_frozen_page_with_its_request_id() {
         "each request has a unique id"
     );
 }
+
+#[test]
+fn closed_note_storage_rolls_back_and_keeps_a_monotonic_token() {
+    let (_dir, kernel, sticky) = open_fixture();
+    let ctx = kernel.context();
+    let injected: fn() -> app_core::CoreResult<()> =
+        || Err(app_core::CoreError::Config("injected failure".into()));
+
+    let failed_create =
+        sticky.create_closed_note_checking(ctx, Some("nope"), Some("nope"), injected);
+    assert!(failed_create.is_err());
+    assert!(sticky.list_notes(ctx, false).unwrap().is_empty());
+    assert_eq!(ctx.window_pool.active_window_count(), 0);
+
+    let created = sticky
+        .create_closed_note(ctx, Some("closed"), Some("original"))
+        .unwrap();
+    assert!(!created.is_open);
+    assert_eq!(ctx.window_pool.active_window_count(), 0);
+
+    let rolled = sticky.save_closed_content_checking(
+        ctx,
+        &created.id,
+        None,
+        Some("should-not-stick"),
+        Some(created.updated_at),
+        created.updated_at,
+        injected,
+    );
+    assert!(rolled.is_err());
+    let unchanged = sticky.get_note(ctx, &created.id).unwrap().unwrap();
+    assert_eq!(unchanged.content_md, "original");
+    assert_eq!(unchanged.title, "closed");
+    assert_eq!(unchanged.updated_at, created.updated_at);
+
+    let same_millis = match sticky
+        .save_closed_content_checking(
+            ctx,
+            &created.id,
+            None,
+            Some("same-millis"),
+            Some(created.updated_at),
+            created.updated_at,
+            || Ok(()),
+        )
+        .unwrap()
+    {
+        ClosedNoteSave::Applied(record) => record,
+        other => panic!("same-millisecond save did not apply: {other:?}"),
+    };
+    assert_eq!(same_millis.content_md, "same-millis");
+    assert_eq!(same_millis.updated_at, created.updated_at + 1);
+
+    let clock_behind = match sticky
+        .save_closed_content_checking(
+            ctx,
+            &created.id,
+            Some("behind"),
+            Some("clock-behind"),
+            Some(same_millis.updated_at),
+            0,
+            || Ok(()),
+        )
+        .unwrap()
+    {
+        ClosedNoteSave::Applied(record) => record,
+        other => panic!("clock-behind save did not apply: {other:?}"),
+    };
+    assert_eq!(clock_behind.title, "behind");
+    assert_eq!(clock_behind.content_md, "clock-behind");
+    assert_eq!(clock_behind.updated_at, same_millis.updated_at + 1);
+
+    let stale = sticky
+        .save_closed_content_checking(
+            ctx,
+            &created.id,
+            None,
+            Some("stale-body"),
+            Some(created.updated_at),
+            clock_behind.updated_at + 5_000,
+            || Ok(()),
+        )
+        .unwrap();
+    match stale {
+        ClosedNoteSave::Conflict(record) => {
+            assert_eq!(record.content_md, "clock-behind");
+            assert_eq!(record.title, "behind");
+            assert_eq!(record.updated_at, clock_behind.updated_at);
+        }
+        other => panic!("stale token changed the note: {other:?}"),
+    }
+    let stored = sticky.get_note(ctx, &created.id).unwrap().unwrap();
+    assert_eq!(stored.content_md, "clock-behind");
+    assert_eq!(stored.updated_at, clock_behind.updated_at);
+    assert!(!stored.is_open);
+    assert_eq!(ctx.window_pool.active_window_count(), 0);
+}

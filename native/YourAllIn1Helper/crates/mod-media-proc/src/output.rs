@@ -67,6 +67,14 @@ pub fn prepare_output(
 }
 
 pub fn finalize_output(partial: &Path, output: &Path) -> CoreResult<()> {
+    finalize_output_with_hook(partial, output, &|| {})
+}
+
+pub(crate) fn finalize_output_with_hook(
+    partial: &Path,
+    output: &Path,
+    after_publish: &dyn Fn(),
+) -> CoreResult<()> {
     let result = (|| {
         // hard_link fails if output appeared concurrently, so an existing user file is never replaced.
         fs::hard_link(partial, output).map_err(|error| {
@@ -75,6 +83,7 @@ pub fn finalize_output(partial: &Path, output: &Path) -> CoreResult<()> {
                 format!("refusing to overwrite {}: {error}", output.display()),
             ))
         })?;
+        after_publish();
         fs::remove_file(partial)?;
         Ok(())
     })();
@@ -90,4 +99,26 @@ pub fn remove_partial(partial: &Path) {
     if partial.exists() {
         let _ = fs::remove_file(partial);
     }
+}
+
+/// Creates an exclusive staging file in `directory`. Publication stays in this directory so it can be a no-clobber hard link.
+pub fn create_private_partial(directory: &Path) -> CoreResult<PathBuf> {
+    fs::create_dir_all(directory)?;
+    for _ in 0..32 {
+        let path = directory.join(format!(
+            ".dsh-{}.partial",
+            uuid::Uuid::new_v4().simple()
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(file) => {
+                drop(file);
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(CoreError::Io(error)),
+        }
+    }
+    Err(CoreError::Config(
+        "could not create a private staging file".into(),
+    ))
 }

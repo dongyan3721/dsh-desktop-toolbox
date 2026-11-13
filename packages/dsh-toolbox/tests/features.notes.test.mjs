@@ -42,6 +42,15 @@ function freshSignal() {
   return new AbortController().signal
 }
 
+test('note blank-text validation uses the same Unicode whitespace set as native Rust', async () => {
+  const bridge = createFakeBridge()
+  const create = tool(createNoteTools(bridge), 'toolbox_note_create')
+  await assert.rejects(create.execute({ title: '\u0085', content_md: '' }, { signal: freshSignal() }), error => error.code === 'INVALID_REQUEST')
+  assert.equal(bridge.calls.length, 0)
+  await create.execute({ title: '\uFEFF', content_md: '' }, { signal: freshSignal() })
+  assert.equal(bridge.calls[0].params.title, '\uFEFF')
+})
+
 test('createNoteTools exposes the three first-wave note tools', () => {
   const tools = createNoteTools(createFakeBridge())
   assert.deepEqual(tools.map(entry => entry.name), [
