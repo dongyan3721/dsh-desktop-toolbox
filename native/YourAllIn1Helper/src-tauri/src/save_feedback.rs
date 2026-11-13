@@ -23,7 +23,7 @@ pub(crate) fn notify_saved(app: &AppHandle, path: &str) {
         }
         let label = format!("save-toast-{serial}");
         let url = format!("index.html?mode=native&window={label}&path={encoded}");
-        let result = WebviewWindowBuilder::new(&handle, &label, WebviewUrl::App(url.into()))
+        let mut builder = WebviewWindowBuilder::new(&handle, &label, WebviewUrl::App(url.into()))
             .title("Saved")
             .inner_size(480.0, 150.0)
             .decorations(false)
@@ -34,8 +34,11 @@ pub(crate) fn notify_saved(app: &AppHandle, path: &str) {
             .focused(false)
             .focusable(false)
             .resizable(false)
-            .visible(false)
-            .build();
+            .visible(false);
+        if let Some(dir) = crate::plugin_host::webview_data_dir(&handle) {
+            builder = builder.data_directory(dir);
+        }
+        let result = builder.build();
         let Ok(window) = result else {
             return;
         };
