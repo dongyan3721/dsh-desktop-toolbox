@@ -28,6 +28,14 @@ const STABLE_ERROR_CODES = new Set([
   'CONFLICT',
   'ACCESS_DENIED',
   'DEPENDENCY_MISSING',
+  'OUTCOME_UNKNOWN',
+  'NATIVE_UNAVAILABLE',
+  'NATIVE_START_FAILED',
+  'NATIVE_START_TIMEOUT',
+  'NATIVE_INTEGRITY',
+  'DESKTOP_PROTOCOL',
+  'DESKTOP_CAPABILITIES',
+  'DESKTOP_SHUTDOWN_FAILED',
   'INTERNAL',
 ])
 
@@ -35,8 +43,8 @@ function rpcSuccess(value) {
   return { ok: true, value }
 }
 
-function rpcFailure(code, message) {
-  return { ok: false, error: { code, message, details: {} } }
+function rpcFailure(code, message, details = {}) {
+  return { ok: false, error: { code, message, details } }
 }
 
 function requestFailure(message) {
@@ -111,7 +119,10 @@ function failureFromError(error, signal) {
   const message = stableCode
     ? (sanitizeMessage(error?.message) ?? 'desktop service request failed')
     : 'desktop service request failed'
-  return rpcFailure(code, message)
+  const causeCode = typeof error?.causeCode === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/u.test(error.causeCode)
+    ? error.causeCode
+    : undefined
+  return rpcFailure(code, message, causeCode === undefined ? {} : { causeCode })
 }
 
 function jsonSafe(value) {

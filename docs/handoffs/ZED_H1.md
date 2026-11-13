@@ -115,6 +115,8 @@ npm pack --dry-run --json
 
 ## 需要 Codex 完成的跨边界改动
 
+> 截至本补充，第 1、2 项已由 Codex 在 integration 分支完成；以下保留为装配约束和验收依据。
+
 1. **主包子路径导出**：`packages/dsh-toolbox-client/index.js` 重新导出 `dsh-toolbox/human-entry`。请给 `packages/dsh-toolbox/package.json` 增加：
    ```json
    "./human-entry": "./lib/human-entry/host.js"
@@ -130,6 +132,60 @@ npm pack --dry-run --json
 
 - 未启动 GUI、未点击 Harness、未验证视觉/焦点/键盘、未发送全局键。
 - 未把包安装到真实桌面 Profile，未验证 `dsh-client-modules` 对**本包** bundle 的扫描/服务/执行。
-- `toolboxDesktop` 尚不存在；Host adapter 只以 fake service 测试。
+- 本工作树未连接真实 `toolboxDesktop`；Host adapter 的 service 仍以 fake 测试，实际服务由 Codex 在 integration 提供。
 - 未验证 Tauri 主窗口、偏好面板、快捷键、单实例、卸载清理。
 - 未新增或修改任何模型 Tool，未用聊天/CLI/控制台命令冒充人的可见入口。
+
+## 入口收口补充（第二轮）
+
+提交基线：`b3a6592`；本补充提交见分支最新提交。
+
+### 实际 SDK 核对
+
+- 读取了实际安装版本的 `@deepseek-ai/dsh-client-connection` Node/browser Client 实现（`vendor/harness-reference/.../lib/client.node.js`、`lib/client.browser.js`）。
+- 确认 generic RPC 的真实层级：
+  - Client `connection.rpc.call(channel, endpoint, payload, signal)` 生成 `{type:"client-request", rpcId, method, payload}`。
+  - Host handler 返回 `{ok:true,value}` / `{ok:false,error:{code,message,details}}`；Client 校验 `server-response`、`rpcId`、成功/失败两支和 `details` 对象。
+  - 错误层不会把失败当成功；rpcId 不匹配会拒绝。
+- Client slots：实际 `dsh-client-ui-sidebar/lib/client.js` 声明 `sidebar.panellist` 为 root-scoped list，并实际使用 `ctx.slots.inject(..., () => ctx.slots.register(...))`；本分支的注册形状与之一致。`main` keyed 注册形状来自安装物 `dsh-client-ui-plugin-manager/lib/client.js` 的实际代码；该 bundle 不在当前 vendor 参考快照中，故测试只对 sidebar 实际 bundle 做源码形状断言，另用 deferred slot 测试验证本入口在 declaration 前不提前注册。
+- `dsh-client-ui-slots` 本身是宿主前端 shell 内部模块，安装物没有可独立导入的公共包；本轮没有伪造一个“真实 slots SDK”测试。
+
+新增 `packages/dsh-toolbox/tests/human-entry.sdk.test.mjs`，直接导入实际 `client.node.js` 的 `installConnection`，只替换 HTTP carrier。测试覆盖：
+- 实际 SDK envelope 成功传递到本入口的 `callHumanEntry`。
+- 实际 SDK 返回结构化失败 envelope。
+- `OUTCOME_UNKNOWN` + `causeCode` 穿过实际 SDK 进入程序 Error 对象。
+- 实际 SDK 拒绝错误 `rpcId`，不会当作成功。
+
+### 人用错误显示
+
+- 正常面板只显示简洁中文和可操作建议；不显示协议 code、英文 message、堆栈。
+- 删除“本页面不发起模型请求”等开发说明。
+- 异常状态保存原始 `Error` 对象（`code`/`message`/`details`）供调试；UI 只按 code 映射友好文案。
+- 只有 Host adapter 确认 `opened:true` 后才显示“桌面工具箱已打开。”；`{opened:false}` 或异常显示错误，不谎称已打开。
+
+### Host stable code
+
+显式保留以下 code，不再落入 `INTERNAL`：
+`OUTCOME_UNKNOWN`、`NATIVE_UNAVAILABLE`、`NATIVE_START_FAILED`、`NATIVE_START_TIMEOUT`、`NATIVE_INTEGRITY`、`DESKTOP_PROTOCOL`、`DESKTOP_CAPABILITIES`、`DESKTOP_SHUTDOWN_FAILED`。
+
+`OUTCOME_UNKNOWN` 的 `causeCode` 经白名单格式校验后放入 `error.details.causeCode`，再由客户端写入调试 Error 对象。
+
+### 测试结果
+
+```powershell
+powershell.exe -NoProfile -Command ". 'D:\Code\dsh-toolbox\.worktrees\zed\scripts\Use-ProjectEnvironment.ps1'; Set-Location 'D:\Code\dsh-toolbox\.worktrees\zed'; node --test packages/dsh-toolbox/tests/human-entry*.test.mjs"
+```
+
+结果：29 tests / 29 pass / 0 fail。
+
+```powershell
+node --test packages/dsh-toolbox/tests/*.test.mjs
+```
+
+结果：108 tests / 108 pass / 0 fail。
+
+### 当前集成状态与未测
+
+- Codex 已在 integration 分支增加主包 `./desktop`、`./human-entry` 子路径导出，并提供无 tools 依赖的 `toolboxDesktop` 服务；本工作树未包含这些 integration 文件，本轮未修改它们。
+- 未连接真实 `toolboxDesktop`/desktop runtime；SDK 集成测试的 Host service 仍是 fake。真实 desktop service、Tauri 窗口、GUI 点击、焦点、快捷键和卸载清理仍由 Codex 验收。
+- 未启动 GUI、未改个人 Profile、未发送全局键。

@@ -12,6 +12,26 @@ window.__ModuleLoader__.load({
     const PANEL_ID = 'toolbox'
     const PANEL_LABEL = '工具箱'
 
+    const HUMAN_ERROR_MESSAGES = {
+      DEPENDENCY_MISSING: '桌面服务尚未就绪。请确认工具箱已安装，然后重启 Harness。',
+      NATIVE_UNAVAILABLE: '桌面工具箱当前不可用。请重新打开 Harness，或在设置中重新启用工具箱。',
+      NATIVE_START_FAILED: '桌面工具箱启动失败。请确认没有另一个工具箱实例占用数据目录，然后重试。',
+      NATIVE_START_TIMEOUT: '桌面工具箱启动超时。请稍后重试；若持续失败，请重启 Harness。',
+      NATIVE_INTEGRITY: '桌面工具箱程序校验失败。请重新安装发布包。',
+      DESKTOP_PROTOCOL: '桌面工具箱与当前 Harness 版本不匹配。请更新后重试。',
+      DESKTOP_CAPABILITIES: '当前桌面程序缺少必要功能。请重新安装发布包。',
+      DESKTOP_SHUTDOWN_FAILED: '上次关闭未完成，可能有未保存内容。请查看桌面工具箱窗口后再重试。',
+      OUTCOME_UNKNOWN: '操作结果未确认。请查看桌面工具箱窗口是否已经打开，再决定是否重试。',
+      CANCELLED: '操作已取消。',
+      TIMEOUT: '操作超时。请稍后重试。',
+      UNSUPPORTED: '当前版本不支持此操作。请更新工具箱。',
+      DISABLED: '工具箱功能已关闭。请在设置中启用。',
+      ACCESS_DENIED: '没有权限执行此操作。',
+      INVALID_REQUEST: '请求无效。请重试；若持续失败，请重启 Harness。',
+      INTERNAL: '桌面工具箱出现异常。请重试；若持续失败，请重启 Harness。',
+    }
+    const DEFAULT_ERROR_MESSAGE = '桌面工具箱暂时无法打开。请稍后重试。'
+
     function codedError(code, message) {
       const error = new Error(message)
       error.code = code
@@ -20,6 +40,10 @@ window.__ModuleLoader__.load({
 
     function errorCode(error) {
       return typeof error?.code === 'string' ? error.code : 'INTERNAL'
+    }
+
+    function humanErrorMessage(error) {
+      return HUMAN_ERROR_MESSAGES[errorCode(error)] ?? DEFAULT_ERROR_MESSAGE
     }
 
     function safeMessage(value) {
@@ -50,7 +74,11 @@ window.__ModuleLoader__.load({
       if (result.ok === true) return result.value
       const error = result.error
       const code = typeof error?.code === 'string' ? error.code : 'INTERNAL'
-      throw codedError(code, safeMessage(error?.message) || '桌面服务请求失败')
+      const failure = codedError(code, safeMessage(error?.message) || '桌面服务请求失败')
+      if (error?.details !== null && typeof error?.details === 'object' && !Array.isArray(error.details)) {
+        failure.details = { ...error.details }
+      }
+      throw failure
     }
 
     const styles = {
@@ -70,12 +98,6 @@ window.__ModuleLoader__.load({
       text: {
         margin: '0 0 12px',
         lineHeight: 1.6,
-      },
-      hint: {
-        margin: '0 0 20px',
-        lineHeight: 1.6,
-        opacity: 0.7,
-        fontSize: 13,
       },
       button: {
         minHeight: 32,
@@ -127,11 +149,8 @@ window.__ModuleLoader__.load({
           setState({ kind: 'opened' })
         } catch (error) {
           if (controller.signal.aborted) return
-          setState({
-            kind: 'error',
-            code: errorCode(error),
-            message: safeMessage(error?.message) || '打开桌面工具箱失败',
-          })
+          const failure = error instanceof Error ? error : codedError('INTERNAL', '打开桌面工具箱失败')
+          setState({ kind: 'error', error: failure })
         }
       }, [connection])
 
@@ -146,15 +165,14 @@ window.__ModuleLoader__.load({
       if (state.kind === 'opening') {
         message = '正在打开桌面工具箱…'
       } else if (state.kind === 'opened') {
-        message = '已请求打开桌面工具箱。'
+        message = '桌面工具箱已打开。'
       } else {
-        message = `无法打开桌面工具箱（${state.code}）：${state.message}`
+        message = humanErrorMessage(state.error)
       }
 
       return h('section', { style: styles.page, 'aria-live': 'polite' },
         h('h1', { style: styles.title }, '桌面工具箱'),
         h('p', { style: styles.text }, message),
-        h('p', { style: styles.hint }, '这里打开的是原来的桌面工具箱窗口；本页面不发起模型请求。'),
         h('button', {
           type: 'button',
           style: styles.button,

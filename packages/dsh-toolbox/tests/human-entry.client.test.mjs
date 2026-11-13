@@ -17,6 +17,12 @@ function createFakeReact() {
       index = 0
       effects.length = 0
     },
+    __resetAll() {
+      state.length = 0
+      refs.length = 0
+      effects.length = 0
+      index = 0
+    },
     createElement(type, props, ...children) {
       return { type, props: { ...props, children } }
     },
@@ -79,6 +85,60 @@ function createSlots() {
       },
     },
   }
+}
+
+function createDeferredSlots() {
+  const pending = []
+  const registrations = []
+  return {
+    registrations,
+    slots: {
+      inject(name, register) {
+        let disposed = false
+        pending.push({
+          name,
+          run() {
+            if (!disposed) register()
+          },
+        })
+        return () => {
+          disposed = true
+        }
+      },
+      register(options, component) {
+        registrations.push({ options, component })
+        return () => {}
+      },
+    },
+    declare(name) {
+      for (const item of pending) {
+        if (item.name === name) item.run()
+      }
+    },
+  }
+}
+
+function collectText(node) {
+  if (node === null || node === undefined || typeof node === 'boolean') return ''
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(collectText).join('')
+  const children = node.props?.children
+  return collectText(children)
+}
+
+async function renderPanel(connection) {
+  const { moduleExports, react } = await loadClientBundle()
+  const { registrations, slots } = createSlots()
+  moduleExports.apply({ slots, connection })
+  const panel = registrations.find(entry => entry.options.name === 'main').component
+
+  react.__reset()
+  panel({ connection })
+  react.__effects[0]()
+  await new Promise(resolve => setImmediate(resolve))
+  react.__reset()
+  const tree = panel({ connection })
+  return { react, tree, text: collectText(tree) }
 }
 
 test('client package manifest exposes a loadable web client half', async () => {
@@ -164,32 +224,111 @@ test('initial main panel calls showMain without a model request', async () => {
   if (typeof cleanup === 'function') cleanup()
 })
 
-test('main panel displays a stable error when the desktop service is unavailable', async () => {
-  const { moduleExports, react } = await loadClientBundle()
-  const { registrations, slots } = createSlots()
+test('main panel shows concise Chinese advice and keeps debug data in the error object', async () => {
   const connection = {
     rpc: {
       async call() {
         return {
           ok: false,
-          error: { code: 'DEPENDENCY_MISSING', message: 'toolboxDesktop service is not available', details: {} },
+          error: {
+            code: 'DEPENDENCY_MISSING',
+            message: 'toolboxDesktop service is not available',
+            details: { causeCode: 'MISSING_SERVICE' },
+          },
         }
       },
     },
   }
-  moduleExports.apply({ slots, connection })
-  const panel = registrations.find(entry => entry.options.name === 'main').component
+  const { react, text } = await renderPanel(connection)
 
-  react.__reset()
-  panel({ connection })
-  react.__effects[0]()
-  await new Promise(resolve => setImmediate(resolve))
+  const state = react.__state[0]
+  assert.equal(state.kind, 'error')
+  assert.ok(state.error instanceof Error)
+  assert.equal(state.error.code, 'DEPENDENCY_MISSING')
+  assert.equal(state.error.message, 'toolboxDesktop service is not available')
+  assert.deepEqual(state.error.details, { causeCode: 'MISSING_SERVICE' })
 
-  assert.deepEqual(react.__state[0], {
-    kind: 'error',
-    code: 'DEPENDENCY_MISSING',
-    message: 'toolboxDesktop service is not available',
-  })
+  assert.match(text, /桌面服务尚未就绪/)
+  assert.equal(text.includes('DEPENDENCY_MISSING'), false)
+  assert.equal(text.includes('toolboxDesktop'), false)
+  assert.equal(text.includes('本页面不发起模型请求'), false)
+})
+
+test('human error codes map to actionable Chinese without leaking protocol text', async () => {
+  const cases = [
+    ['NATIVE_UNAVAILABLE', /桌面工具箱当前不可用/],
+    ['NATIVE_START_FAILED', /启动失败/],
+    ['NATIVE_START_TIMEOUT', /启动超时/],
+    ['NATIVE_INTEGRITY', /程序校验失败/],
+    ['DESKTOP_PROTOCOL', /版本不匹配/],
+    ['DESKTOP_CAPABILITIES', /缺少必要功能/],
+    ['DESKTOP_SHUTDOWN_FAILED', /上次关闭未完成/],
+    ['OUTCOME_UNKNOWN', /操作结果未确认/],
+    ['INTERNAL', /出现异常/],
+  ]
+
+  for (const [code, expected] of cases) {
+    const connection = {
+      rpc: {
+        async call() {
+          return {
+            ok: false,
+            error: { code, message: `English internal detail for ${code}`, details: {} },
+          }
+        },
+      },
+    }
+    const { text } = await renderPanel(connection)
+    assert.match(text, expected)
+    assert.equal(text.includes(code), false, `${code} must not appear in visible text`)
+    assert.equal(text.includes('English internal detail'), false)
+  }
+})
+
+test('a success value without opened:true is shown as an error, never as opened', async () => {
+  const connection = {
+    rpc: {
+      async call() {
+        return { ok: true, value: { opened: false } }
+      },
+    },
+  }
+  const { react, text } = await renderPanel(connection)
+
+  assert.equal(react.__state[0].kind, 'error')
+  assert.equal(react.__state[0].error.code, 'INTERNAL')
+  assert.equal(text.includes('已打开'), false)
+  assert.match(text, /出现异常/)
+})
+
+test('apply waits for slot declarations instead of registering early', async () => {
+  const { moduleExports } = await loadClientBundle()
+  const deferred = createDeferredSlots()
+  const connection = { rpc: { call: async () => ({ ok: true, value: {} }) } }
+
+  moduleExports.apply({ slots: deferred.slots, connection })
+  assert.equal(deferred.registrations.length, 0)
+
+  deferred.declare('main')
+  assert.equal(deferred.registrations.length, 1)
+  assert.equal(deferred.registrations[0].options.name, 'main')
+
+  deferred.declare('sidebar.panellist')
+  assert.equal(deferred.registrations.length, 2)
+  assert.equal(deferred.registrations[1].options.name, 'sidebar.panellist')
+})
+
+test('slot declaration and injection match the actual sidebar client bundle', async () => {
+  const sidebar = await readFile(
+    new URL('../../../vendor/harness-reference/@deepseek-ai/dsh-client-ui-sidebar/lib/client.js', import.meta.url),
+    'utf8',
+  )
+  const ours = await readFile(clientBundleUrl, 'utf8')
+
+  assert.match(sidebar, /"sidebar\.panellist":\s*\{\s*kind:\s*"list"/)
+  assert.match(sidebar, /ctx\.slots\.inject\("sidebar",\s*\(\)\s*=>\s*ctx\.slots\.register\(\{/)
+  assert.match(ours, /ctx\.slots\.inject\('main',/)
+  assert.match(ours, /ctx\.slots\.inject\('sidebar\.panellist',/)
 })
 
 test('callHumanEntry maps success and propagates stable failures', async () => {
