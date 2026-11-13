@@ -46,11 +46,27 @@ async function unload() {
   await owner.handle.waitForExit();
   await log({ event: 'unloaded', ownedProcessExited: true });
 }
+async function conflict() {
+  const other = new Context();
+  try {
+    await other.plugin(LocalSubprocess);
+    await other.plugin(Loader, { baseUrl: new URL('../package.json', import.meta.url).href });
+    const id = await other.loader.create({
+      id: 'conflicting-desktop',
+      name: new URL('../packages/dsh-toolbox/lib/desktop/index.js', import.meta.url).href,
+      config: { dataDir: run.data, startupTimeoutMs: 5000 },
+    });
+    await other.loader.await();
+    await assert.rejects(other.loader.resolve(id).fiber.await(), { code: 'NATIVE_START_FAILED' });
+    assert.equal((await ctx.get('toolboxDesktop').status()).nativeConnected, true);
+    await log({ event: 'conflict-rejected', originalStillReady: true });
+  } finally { await other.fiber.dispose(); }
+}
 try {
   await ctx.plugin(LocalSubprocess);
   await ctx.plugin(Loader, { baseUrl: pathToFileURL(join(process.cwd(), 'package.json')).href });
   await load();
-  console.log('Commands: status, show, panel, unload, reload, quit');
+  console.log('Commands: status, show, panel, conflict, unload, reload, quit');
   const lines = createInterface({ input: process.stdin, terminal: false });
   for await (const raw of lines) {
     const command = raw.trim();
@@ -58,6 +74,7 @@ try {
       if (command === 'quit') { lines.close(); break; }
       if (command === 'unload') { await unload(); continue; }
       if (command === 'reload') { await unload(); await load(); continue; }
+      if (command === 'conflict') { await conflict(); continue; }
       const desktop = ctx.get('toolboxDesktop');
       if (!desktop) throw new Error('Desktop is unloaded');
       const value = command === 'status' ? await desktop.status()
