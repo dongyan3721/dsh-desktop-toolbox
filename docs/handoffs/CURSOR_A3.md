@@ -4,7 +4,7 @@
 
 分支：`agent/cursor-native`
 
-第一阶段提交 `52d3070` 已在 integration。本交接覆盖其后的原生剩余实现。没有启动桌面，没有真实截屏、系统剪贴板、全局热键或安装 Profile。Vue 由 CodeBuddy 在原 antigravity 工作树实现，协议字段没有另起一套。
+第一阶段提交 `52d3070` 已在 integration。本阶段提交 `1f98a56`。没有启动桌面，没有真实截屏、系统剪贴板、全局热键或安装 Profile。Vue 由 CodeBuddy 在原 antigravity 工作树实现，协议字段没有另起一套。
 
 ## 便笺
 
