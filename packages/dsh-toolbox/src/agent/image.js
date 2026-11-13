@@ -1,7 +1,7 @@
 import { agentError, throwIfAborted } from './common.js'
 
 export const MAX_AGENT_IMAGE_BYTES = 16 * 1024 * 1024
-export const MAX_AGENT_IMAGE_PIXELS = 64_000_000
+export const MAX_AGENT_IMAGE_PIXELS = 16_000_000
 export const MAX_ARTIFACT_ID_SCALARS = 200
 
 const SUPPORTED_IMAGE_TYPES = new Set([
