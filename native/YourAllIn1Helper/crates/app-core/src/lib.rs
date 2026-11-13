@@ -12,9 +12,11 @@
 //!   backups, atomic incremental SQL migrations, and forward/backward-compatible JSON config migration.
 //! - **`WindowPoolManager`**: 3-level WebView lifecycle manager guaranteeing 0 hidden WebViews on startup.
 
+pub mod agent_access;
 pub mod catalog;
 pub mod clipboard_guard;
 pub mod config;
+pub use agent_access::{agent_error_code, agent_supported, AgentAccessView};
 pub use catalog::{ModuleDefinition, MODULE_CATALOG};
 pub use clipboard_guard::{ClipboardSuppressionLease, SuppressionHolder};
 pub use config::ModulesConfig;
@@ -28,6 +30,7 @@ pub mod storage;
 pub mod window_manager;
 
 use parking_lot::RwLock;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
 use tracing::{info, warn};
 
@@ -191,6 +194,7 @@ impl AppKernelBuilder {
             context,
             registry: Arc::new(self.registry),
             config_path,
+            agent_revision: AtomicU64::new(1),
         })
     }
 
@@ -207,6 +211,7 @@ pub struct AppKernel {
     context: ModuleContext,
     registry: Arc<ModuleRegistry>,
     config_path: PathBuf,
+    agent_revision: AtomicU64,
 }
 
 impl AppKernel {
@@ -272,6 +277,7 @@ impl AppKernel {
 
     /// Enables/disables a mounted feature with lifecycle cleanup and durable configuration.
     pub fn set_module_enabled(&self, module_id: &str, enabled: bool) -> CoreResult<()> {
+        let before = self.registry.is_enabled(module_id);
         self.registry
             .set_enabled(module_id, enabled, &self.context, || {
                 self.update_config(|config| {
@@ -280,7 +286,83 @@ impl AppKernel {
                         .enabled
                         .insert(module_id.to_string(), enabled);
                 })
-            })
+            })?;
+        if agent_supported(module_id) && before != enabled {
+            self.bump_agent_revision();
+        }
+        Ok(())
+    }
+
+    /// Persists a human Agent grant. Unsupported and unknown modules are rejected.
+    /// Disabling a module does not clear the grant, and this call does not enable the module.
+    pub fn set_agent_access(&self, module_id: &str, allowed: bool) -> CoreResult<()> {
+        if !agent_supported(module_id) {
+            return Err(CoreError::AgentUnsupported(module_id.to_string()));
+        }
+        let current = self
+            .context
+            .config
+            .read()
+            .modules
+            .agent_access
+            .get(module_id)
+            .copied()
+            .unwrap_or(false);
+        if current == allowed {
+            return Ok(());
+        }
+        self.update_config(|config| {
+            config
+                .modules
+                .agent_access
+                .insert(module_id.to_string(), allowed);
+        })?;
+        self.bump_agent_revision();
+        Ok(())
+    }
+
+    /// Re-reads support, availability, enablement and the grant. Call this before every Agent effect.
+    pub fn authorize_agent(&self, module_id: &str) -> CoreResult<()> {
+        let view = self.agent_access_view(module_id);
+        if !view.agent_supported {
+            return Err(CoreError::AgentUnsupported(module_id.to_string()));
+        }
+        if !self.registry.contains(module_id) {
+            return Err(CoreError::AgentUnavailable(module_id.to_string()));
+        }
+        if !self.registry.is_enabled(module_id) {
+            return Err(CoreError::ModuleDisabled(module_id.to_string()));
+        }
+        if !view.agent_allowed {
+            return Err(CoreError::AgentAccessDenied(module_id.to_string()));
+        }
+        Ok(())
+    }
+
+    pub fn agent_access_view(&self, module_id: &str) -> AgentAccessView {
+        let stored = self
+            .context
+            .config
+            .read()
+            .modules
+            .agent_access
+            .get(module_id)
+            .copied()
+            .unwrap_or(false);
+        AgentAccessView::from_runtime(
+            module_id,
+            stored,
+            self.registry.contains(module_id),
+            self.registry.is_enabled(module_id),
+        )
+    }
+
+    pub fn agent_revision(&self) -> u64 {
+        self.agent_revision.load(Ordering::Acquire)
+    }
+
+    fn bump_agent_revision(&self) {
+        self.agent_revision.fetch_add(1, Ordering::AcqRel);
     }
 
     /// Gracefully shuts down all modules in reverse registration order and destroys all open WebViews.
@@ -299,3 +381,7 @@ impl AppKernel {
 #[cfg(test)]
 #[path = "../tests/unit/lib.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/unit/agent_access.rs"]
+mod agent_access_tests;

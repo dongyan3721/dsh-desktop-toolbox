@@ -111,6 +111,19 @@ impl ConfigMigrationPipeline {
                     current_version = 4;
                     obj.insert("config_version".to_string(), Value::from(current_version));
                 }
+                4 => {
+                    // Old files have no Agent grants. An absent map means every module is denied.
+                    let modules = obj
+                        .entry("modules")
+                        .or_insert_with(|| Value::Object(Map::new()));
+                    if let Some(modules) = modules.as_object_mut() {
+                        modules
+                            .entry("agent_access")
+                            .or_insert_with(|| Value::Object(Map::new()));
+                    }
+                    current_version = 5;
+                    obj.insert("config_version".to_string(), Value::from(current_version));
+                }
                 _ => {
                     current_version = CURRENT_CONFIG_VERSION;
                     obj.insert("config_version".to_string(), Value::from(current_version));

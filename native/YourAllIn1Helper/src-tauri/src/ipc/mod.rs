@@ -60,10 +60,14 @@ impl DesktopHost {
         let registry = self.kernel.registry();
         Value::Array(app_core::MODULE_CATALOG.iter().map(|module| {
             let supported = module.id != "window_pin" || self.os_hal.window_controller.supports_external_topmost();
+            let access = self.kernel.agent_access_view(module.id);
             json!({ "number": module.number, "id": module.id, "name": module.name,
                 "available": registry.contains(module.id), "enabled": registry.is_enabled(module.id),
                 "supported": supported,
                 "unavailable_reason": if !registry.contains(module.id) { "待开发" } else if !supported { "当前系统不支持外部窗口真正置顶" } else { "" },
+                "agent_supported": access.agent_supported,
+                "agent_allowed": access.agent_allowed,
+                "agent_effective": access.agent_effective,
             })
         }).collect())
     }

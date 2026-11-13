@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 /// Current schema version of `config.json`.
-pub const CURRENT_CONFIG_VERSION: u32 = 4;
+pub const CURRENT_CONFIG_VERSION: u32 = 5;
 
 /// Thread-safe shared configuration handle injected into `ModuleContext`.
 pub type SharedConfig = Arc<RwLock<AppConfig>>;
@@ -183,6 +183,9 @@ pub struct ModulesConfig {
     pub enabled: HashMap<String, bool>,
     /// Each feature owns the typed schema of its settings; core only persists JSON.
     pub settings: HashMap<String, Value>,
+    /// Explicit Agent grants. A missing key is false. Unsupported IDs never become allowed.
+    #[serde(default)]
+    pub agent_access: HashMap<String, bool>,
     #[serde(flatten)]
     pub unknown_fields: Map<String, Value>,
 }
@@ -194,6 +197,7 @@ impl Default for ModulesConfig {
                 .map(|module| (module.id.to_string(), true))
                 .collect(),
             settings: HashMap::new(),
+            agent_access: HashMap::new(),
             unknown_fields: Map::new(),
         }
     }
@@ -202,6 +206,12 @@ impl ModulesConfig {
     /// Custom modules can be mounted without adding a core configuration field.
     pub fn is_enabled(&self, id: &str) -> bool {
         self.enabled.get(id).copied().unwrap_or(true)
+    }
+
+    /// Stored grant for a module that actually supports Agent access.
+    pub fn agent_allowed(&self, id: &str) -> bool {
+        crate::agent_access::agent_supported(id)
+            && self.agent_access.get(id).copied().unwrap_or(false)
     }
 }
 
