@@ -25,7 +25,16 @@ export function mountEmbeddedDashboard(
 ): () => void {
   const shadowRoot = container.shadowRoot ?? container.attachShadow({ mode: 'open' });
   const style = document.createElement('style');
-  style.textContent = `${embeddedBaseStyle()}\n${panelStyle}\n${componentStyle}\n:host, .embedded-root { display:block; width:100%; height:100%; min-height:0; } .launcher { height:100%; min-height:360px; }`;
+  style.textContent = `${embeddedBaseStyle()}\n${panelStyle}\n${componentStyle}\n
+    :host, .embedded-root { display:block; width:100%; height:100%; min-width:0; min-height:0; }
+    .embedded-root { container-type:inline-size; }
+    .launcher.macos-window { width:100%; height:100%; min-width:0; min-height:0; }
+    .embedded-root .feature-grid { grid-template-columns:repeat(auto-fit, minmax(min(360px, 100%), 1fr)); }
+    @container (max-width:580px) {
+      .embedded-root .shortcut-row { grid-template-columns:1fr; padding:8px 0; }
+      .embedded-root .shortcut-controls { justify-content:space-between; }
+      .embedded-root .shortcut-input { flex:1; min-width:0; }
+    }`;
   shadowRoot.append(style);
 
   const mountPoint = document.createElement('div');

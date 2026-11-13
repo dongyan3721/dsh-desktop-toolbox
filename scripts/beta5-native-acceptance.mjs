@@ -82,7 +82,9 @@ try {
     await fixtureAction('text');
     await waitFor(() => db.prepare('SELECT updated_at FROM clipboard_items WHERE content_text = ?').get('DSH-BETA5-SOURCE synthetic text').updated_at > text.updated_at, 'duplicate clipboard sequence refresh');
     await fixtureAction('image');
-    await waitFor(() => db.prepare("SELECT source_app_name FROM clipboard_items WHERE item_type = 'image'").get(), 'image capture');
+    // A previous synthetic image may already have been observed on enablement.
+    // Wait for this new clipboard sequence's asynchronous source update.
+    await waitFor(() => db.prepare("SELECT source_app_name FROM clipboard_items WHERE item_type = 'image'").get()?.source_app_name?.toLowerCase() === 'pwsh', 'image source update');
     const image = db.prepare("SELECT source_app_name FROM clipboard_items WHERE item_type = 'image'").get();
     assert.equal(image.source_app_name.toLowerCase(), 'pwsh');
     proof.realTextAndImageOwner = 'pwsh'; proof.repeatedCopyRefreshes = true;
