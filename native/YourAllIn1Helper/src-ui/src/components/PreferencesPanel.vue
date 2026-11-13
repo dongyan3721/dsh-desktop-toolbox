@@ -8,7 +8,8 @@
     </section>
     <section class="preference-section shortcut-section">
       <div class="section-heading"><div><h2>{{ t('desktop.shortcuts') }}</h2><p>{{ t('desktop.shortcutsHint') }}</p></div><button class="check-all" :disabled="loading || checkingAll || saving !== null" @click="checkAllShortcuts">{{ checkingAll ? t('desktop.checkingShortcuts') : t('desktop.checkShortcuts') }}</button></div>
-      <p v-if="scanSummary" class="scan-summary" :class="{ 'has-issues': scanSummary.issues > 0 }" role="status">{{ t('desktop.checkSummary', scanSummary) }}</p>
+      <p v-if="probeUnavailable" class="scan-summary" role="status">{{ t('desktop.diagnosis.nativeUnavailable') }}</p>
+      <p v-else-if="scanSummary" class="scan-summary" :class="{ 'has-issues': scanSummary.issues > 0 }" role="status">{{ t('desktop.checkSummary', scanSummary) }}</p>
       <p v-if="loading" class="muted" role="status">{{ t('desktop.loading') }}</p>
       <details v-for="group in shortcutGroups" :key="group.module" class="shortcut-group">
         <summary><h3>{{ moduleName(group.module) }} <span v-if="!group.enabled">{{ t('desktop.moduleOff') }}</span></h3><span v-if="groupIssues(group.rows)" class="group-issues">{{ t('desktop.checkIssueCount', { count: groupIssues(group.rows) }) }}</span></summary>
@@ -20,8 +21,34 @@
             <button class="reset-shortcut" :disabled="saving !== null || shortcut.editable === false" :aria-label="t('desktop.resetShortcut', { name: actionName(shortcut) })" @click="saveShortcut(shortcut, null)">{{ shortcut.optional ? t('desktop.clear') : t('desktop.reset') }}</button>
           </div>
           <p v-if="checking[shortcut.spec.action_id]" class="check-result" role="status">{{ t('desktop.checkingShortcuts') }}</p>
-          <p v-else-if="checks[shortcut.spec.action_id] && checks[shortcut.spec.action_id].status !== 'unassigned'" class="check-result" :class="{ blocked: isBlocked(checks[shortcut.spec.action_id]), available: checks[shortcut.spec.action_id].status === 'available' }" :title="checks[shortcut.spec.action_id].detail || ''" role="status">{{ checkMessage(checks[shortcut.spec.action_id]) }}</p>
-          <p v-else-if="shortcut.native_error" class="row-error" :title="shortcut.native_error">{{ t('desktop.shortcutUnavailable') }}</p>
+          <div v-else-if="presentation(shortcut).visible" class="check-result" :class="{ blocked: presentation(shortcut).blocked, available: presentation(shortcut).available }" role="status">
+            <p class="check-summary">{{ t(presentation(shortcut).summaryKey, presentation(shortcut).summaryParams) }}</p>
+            <div class="check-actions">
+              <button type="button" class="recheck" @click="recheckShortcut(shortcut)">{{ t('desktop.diagnosis.recheck') }}</button>
+            </div>
+            <details v-if="presentation(shortcut).showDetails" class="check-details">
+              <summary>{{ t('desktop.diagnosis.showDetails') }}</summary>
+              <dl>
+                <div><dt>{{ t('desktop.diagnosis.combo') }}</dt><dd>{{ presentation(shortcut).combo }}</dd></div>
+                <div><dt>{{ t('desktop.diagnosis.action') }}</dt><dd>{{ presentation(shortcut).actionLabel }} ({{ presentation(shortcut).actionId }})</dd></div>
+                <div><dt>{{ t('desktop.diagnosis.category') }}</dt><dd>{{ presentation(shortcut).categoryKnown ? t(presentation(shortcut).categoryKey) : presentation(shortcut).category }}</dd></div>
+                <div v-if="presentation(shortcut).osErrorCode != null"><dt>{{ t('desktop.diagnosis.osError') }}</dt><dd>{{ presentation(shortcut).osErrorCode }}</dd></div>
+                <div v-if="presentation(shortcut).subjectLines.length"><dt>{{ t('desktop.diagnosis.subjects') }}</dt><dd>{{ presentation(shortcut).subjectLines.join(' / ') }}</dd></div>
+                <div v-if="presentation(shortcut).ownerRow === 'confirmed' && presentation(shortcut).owner"><dt>{{ t('desktop.diagnosis.owner') }}</dt><dd>{{ t('desktop.diagnosis.ownerConfirmed', { program: presentation(shortcut).owner?.program || '', pid: presentation(shortcut).owner?.pid || '' }) }}</dd></div>
+                <div v-else-if="presentation(shortcut).ownerRow === 'unknown'"><dt>{{ t('desktop.diagnosis.owner') }}</dt><dd>{{ t('desktop.diagnosis.ownerUnknown') }}</dd></div>
+                <div><dt>{{ t('desktop.diagnosis.raw') }}</dt><dd class="raw">{{ presentation(shortcut).raw || t('desktop.diagnosis.rawEmpty') }}</dd></div>
+              </dl>
+              <p v-if="presentation(shortcut).guidanceKeys.length" class="check-label">{{ t('desktop.diagnosis.guidance') }}</p>
+              <ul v-if="presentation(shortcut).guidanceKeys.length" class="check-guidance">
+                <li v-for="key in presentation(shortcut).guidanceKeys" :key="key">{{ t(key) }}</li>
+              </ul>
+              <p v-if="presentation(shortcut).suggestionKeys.length" class="check-label">{{ t('desktop.diagnosis.suggestions') }}</p>
+              <p v-if="presentation(shortcut).suggestionKeys.length" class="suggestion-note">{{ t('desktop.diagnosis.suggestionsNote') }}</p>
+              <ul v-if="presentation(shortcut).suggestionKeys.length" class="check-suggestions">
+                <li v-for="key in presentation(shortcut).suggestionKeys" :key="key">{{ t(key) }}</li>
+              </ul>
+            </details>
+          </div>
         </div>
       </details>
     </section>
@@ -31,7 +58,8 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
-import { invokeIpc, type KernelStatus, type ShortcutPreference, type ShortcutCheck } from '../api/ipc';
+import { invokeIpc, type KernelStatus, type ShortcutPreference } from '../api/ipc';
+import { isBlockingStatus, presentShortcutRow, type ShortcutCheckWire, type ShortcutDiagnosisWire } from '../utils/shortcutDiagnostics';
 import { t, currentLocale, LOCALE_OPTIONS, setLocale, type SupportedLocale } from '../utils/i18n';
 import { notify } from '../utils/toast';
 import { currentThemeMode, currentAccent, isDarkActive, ACCENT_PALETTE, setThemeMode, setAccentColor, type ThemeMode } from '../utils/theme';
@@ -45,28 +73,55 @@ const saving = ref<string | null>(null);
 const loading = ref(true);
 const notice = ref('');
 const failed = ref(false);
-const checks = ref<Record<string, ShortcutCheck>>({});
+const checks = ref<Record<string, ShortcutCheckWire>>({});
 const checking = ref<Record<string, boolean>>({});
 const checkingAll = ref(false);
 const scanSummary = ref<{ count: number; issues: number } | null>(null);
+const probeUnavailable = ref(false);
+type PreferenceRow = ShortcutPreference & { diagnosis?: ShortcutDiagnosisWire | null };
 const generations: Record<string, number> = {};
 let changeEpoch = 0;
-function isBlocked(check?: ShortcutCheck) { return !!check && ['internal_conflict', 'os_unavailable', 'invalid', 'probe_error'].includes(check.status); }
-function groupIssues(rows: ShortcutPreference[]) { return rows.filter(row => isBlocked(checks.value[row.spec.action_id])).length; }
-function checkMessage(check: ShortcutCheck): string {
-  if (check.status === 'internal_conflict') {
-    const names = (check.conflicts || []).map(row => `${moduleName(row.spec.module_id)} · ${actionName(row)}${row.enabled ? '' : ` (${t('desktop.moduleOff')})`}`).join(' / ');
-    return t('desktop.checkInternal', { names });
-  }
-  return t(`desktop.checkStatus.${check.status}`);
+function isBlocked(check?: ShortcutCheckWire) { return isBlockingStatus(check?.status); }
+function groupIssues(rows: ShortcutPreference[]) { return rows.filter(row => isBlocked(checks.value[row.spec.action_id]) || (!checks.value[row.spec.action_id] && presentation(row).blocked)).length; }
+function presentation(shortcut: ShortcutPreference) {
+  const row = shortcut as PreferenceRow;
+  return presentShortcutRow({
+    spec: shortcut.spec,
+    displayLabel: shortcut.display_label,
+    activeHotkey: shortcut.active_logical_hotkey,
+    nativeError: shortcut.native_error,
+    storedDiagnosis: row.diagnosis,
+    check: checks.value[shortcut.spec.action_id] || null,
+    moduleLabel: moduleName,
+    actionLabel: spec => actionName({ ...shortcut, spec }),
+    disabledLabel: t('desktop.moduleOff'),
+  });
 }
-async function checkShortcut(actionId: string, hotkey: string | null): Promise<ShortcutCheck> {
+function checkMessage(check: ShortcutCheckWire, shortcut: ShortcutPreference): string {
+  const view = presentShortcutRow({
+    spec: shortcut.spec,
+    displayLabel: check.display_label || shortcut.display_label,
+    activeHotkey: shortcut.active_logical_hotkey,
+    nativeError: null,
+    check,
+    moduleLabel: moduleName,
+    actionLabel: spec => actionName({ ...shortcut, spec }),
+    disabledLabel: t('desktop.moduleOff'),
+  });
+  return t(view.summaryKey, view.summaryParams);
+}
+function recheckShortcut(shortcut: ShortcutPreference) {
+  const drafted = draft.value[shortcut.spec.action_id];
+  const hotkey = drafted ?? (shortcut.active_logical_hotkey || null);
+  return checkShortcut(shortcut.spec.action_id, hotkey || null);
+}
+async function checkShortcut(actionId: string, hotkey: string | null): Promise<ShortcutCheckWire> {
   const token = generations[actionId] = (generations[actionId] || 0) + 1;
   const epoch = changeEpoch;
   checking.value[actionId] = true;
-  let result: ShortcutCheck;
+  let result: ShortcutCheckWire;
   try {
-    result = await invokeIpc<ShortcutCheck>('kernel_check_shortcut', { action_id: actionId, hotkey });
+    result = await invokeIpc<ShortcutCheckWire>('kernel_check_shortcut', { action_id: actionId, hotkey });
     if (!result || typeof result.status !== 'string') throw new Error('Invalid shortcut check response');
   } catch (err) { result = { action_id: actionId, hotkey: hotkey || '', status: 'probe_error', detail: String(err) }; }
   if (!disposed && generations[actionId] === token) {
@@ -77,17 +132,19 @@ async function checkShortcut(actionId: string, hotkey: string | null): Promise<S
 }
 async function checkAllShortcuts() {
   const epoch = ++changeEpoch;
-  checkingAll.value = true; scanSummary.value = null;
+  checkingAll.value = true; scanSummary.value = null; probeUnavailable.value = false;
   try {
-    const result = await invokeIpc<{ checks: ShortcutCheck[] }>('kernel_check_shortcuts');
-    const merged: Record<string, ShortcutCheck> = Object.fromEntries(result.checks.map(check => [check.action_id, check]));
+    const result = await invokeIpc<{ checks: ShortcutCheckWire[] }>('kernel_check_shortcuts');
+    const merged: Record<string, ShortcutCheckWire> = Object.fromEntries(result.checks.map(check => [check.action_id || '', check]));
     // Include unsaved candidates, rather than reporting an old configured key as available.
     for (const [id, hotkey] of Object.entries(draft.value)) {
-      merged[id] = await invokeIpc<ShortcutCheck>('kernel_check_shortcut', { action_id: id, hotkey });
+      merged[id] = await invokeIpc<ShortcutCheckWire>('kernel_check_shortcut', { action_id: id, hotkey });
     }
     if (!disposed && changeEpoch === epoch) {
       checks.value = merged;
-      scanSummary.value = { count: Object.values(merged).filter(check => check.status !== 'unassigned').length, issues: Object.values(merged).filter(isBlocked).length };
+      const assigned = Object.values(merged).filter(check => check.status !== 'unassigned');
+      probeUnavailable.value = assigned.length > 0 && assigned.every(check => check.status === 'not_checked');
+      scanSummary.value = probeUnavailable.value ? null : { count: assigned.length, issues: assigned.filter(isBlocked).length };
     }
   } catch (err) { if (!disposed && changeEpoch === epoch) showError(err); }
   finally { checkingAll.value = false; }
@@ -116,7 +173,7 @@ function showError(err: unknown) {
 function acceptRecordedShortcut(hotkey: string) {
   const id = recording.value;
   if (!id || !hotkey) return;
-  ++changeEpoch; scanSummary.value = null; delete checks.value[id];
+  ++changeEpoch; scanSummary.value = null; probeUnavailable.value = false; delete checks.value[id];
   draft.value[id] = hotkey;
   setRecording(null);
   if (typeof document !== 'undefined') (document.activeElement as HTMLElement | null)?.blur();
@@ -142,10 +199,10 @@ function recordShortcut(event: KeyboardEvent, shortcut: ShortcutPreference) {
 }
 async function saveShortcut(shortcut: ShortcutPreference, hotkey: string | null) {
   saving.value = shortcut.spec.action_id; notice.value = ''; failed.value = false;
-  ++changeEpoch; scanSummary.value = null;
+  ++changeEpoch; scanSummary.value = null; probeUnavailable.value = false;
   try {
     const check = await checkShortcut(shortcut.spec.action_id, hotkey);
-    if (isBlocked(check)) { notice.value = checkMessage(check); failed.value = true; return; }
+    if (isBlocked(check)) { notice.value = checkMessage(check, shortcut); failed.value = true; return; }
     const result = await invokeIpc<{ shortcuts: ShortcutPreference[] }>('kernel_update_shortcut', { action_id: shortcut.spec.action_id, hotkey });
     shortcuts.value = result.shortcuts;
     delete draft.value[shortcut.spec.action_id];
@@ -195,6 +252,19 @@ select { min-width: 150px; background: var(--macos-bg-input); border: 1px solid 
 .check-result { font-size: 11px; color: var(--macos-text-secondary); grid-column: 1 / -1; padding-bottom: 6px; overflow-wrap: anywhere; }
 .check-result.blocked { color: var(--macos-danger); }
 .check-result.available { color: var(--macos-success); }
+.check-summary { margin: 0; }
+.check-actions { display: flex; gap: 12px; margin: 2px 0 4px; }
+.recheck { border: 0; background: none; color: var(--macos-accent); padding: 2px 0; cursor: pointer; font-size: 11px; }
+.check-details { margin: 0 0 6px; color: var(--macos-text-secondary); }
+.check-details summary { cursor: pointer; color: var(--macos-accent); }
+.check-details dl { display: grid; gap: 4px; margin: 6px 0; }
+.check-details div { display: grid; grid-template-columns: 88px 1fr; gap: 8px; }
+.check-details dt { color: var(--macos-text-tertiary); }
+.check-details dd { margin: 0; overflow-wrap: anywhere; }
+.check-details .raw { white-space: pre-wrap; }
+.check-label, .suggestion-note { margin: 6px 0 0; }
+.check-guidance, .check-suggestions { margin: 2px 0 0; padding-left: 18px; }
+.suggestion-note, .check-suggestions { color: var(--macos-text-secondary); }
 .section-heading p, .muted { font-size: 11px; color: var(--macos-text-secondary); }
 .shortcut-group { border-bottom: 1px solid var(--macos-border-subtle); margin-top: 0; }
 .shortcut-group summary { display: flex; align-items: center; justify-content: space-between; min-height: 36px; cursor: pointer; list-style: none; }
