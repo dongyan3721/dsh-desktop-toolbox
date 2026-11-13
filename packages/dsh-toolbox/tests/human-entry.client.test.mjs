@@ -167,7 +167,7 @@ test('client bundle registers the expected sidebar and main panel ids', async ()
   assert.equal(typeof moduleExports.apply, 'function')
   assert.deepEqual(moduleExports.inject, ['slots', 'connection'])
   assert.equal(moduleExports.PANEL_ID, 'toolbox')
-  assert.equal(moduleExports.HUMAN_ENTRY_CHANNEL, '/toolbox-human')
+  assert.equal(moduleExports.HUMAN_ENTRY_CHANNEL, '/api')
 })
 
 test('client apply registers one sidebar icon and one matching main panel', async () => {
@@ -216,8 +216,8 @@ test('initial main panel calls showMain without a model request', async () => {
   await new Promise(resolve => setImmediate(resolve))
 
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].channel, '/toolbox-human')
-  assert.equal(calls[0].endpoint, 'showMain')
+  assert.equal(calls[0].channel, '/api')
+  assert.equal(calls[0].endpoint, 'toolbox-human/showMain')
   assert.deepEqual(calls[0].payload, {})
   assert.ok(calls[0].signal instanceof AbortSignal)
   assert.equal(react.__state[0].kind, 'opened')
@@ -337,8 +337,8 @@ test('callHumanEntry maps success and propagates stable failures', async () => {
   const connection = {
     rpc: {
       async call(channel, endpoint, payload, receivedSignal) {
-        assert.equal(channel, '/toolbox-human')
-        assert.equal(endpoint, 'openPanel')
+        assert.equal(channel, '/api')
+        assert.equal(endpoint, 'toolbox-human/openPanel')
         assert.deepEqual(payload, { moduleId: 'preferences' })
         assert.equal(receivedSignal, signal)
         return { ok: true, value: { opened: true } }

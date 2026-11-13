@@ -1,6 +1,6 @@
 {
   "name": "dsh-toolbox",
-  "version": "0.1.0-alpha.4",
+  "version": "0.1.0-alpha.5",
   "description": "Original human desktop toolbox for DeepSeek Harness",
   "type": "module",
   "os": ["win32"],
