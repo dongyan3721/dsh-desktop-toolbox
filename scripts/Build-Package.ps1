@@ -3,6 +3,13 @@ $ErrorActionPreference = 'Stop'
 $buildRoot = Split-Path $PSScriptRoot -Parent
 Push-Location $buildRoot
 try {
+    $releaseVersion = (Get-Content packages/dsh-toolbox/package.json -Raw | ConvertFrom-Json).version
+    foreach ($releaseName in @('dsh-toolbox', 'dsh-toolbox-client')) {
+        if (Test-Path -LiteralPath (Join-Path $buildRoot "dist/$releaseName-$releaseVersion.tgz")) {
+            throw "Release archive already exists: $releaseName-$releaseVersion.tgz. Use a new version instead of replacing an artifact."
+        }
+    }
+    & "$PSScriptRoot/Build-Desktop.ps1"
     cargo build --manifest-path native/YourAllIn1Helper/Cargo.toml -p dsh-bridge --release --locked --offline
     if ($LASTEXITCODE -ne 0) { throw 'Native release build failed' }
     node scripts/bundle-native.mjs
@@ -13,5 +20,10 @@ try {
     try {
         pnpm.cmd pack --pack-destination ../../dist
         if ($LASTEXITCODE -ne 0) { throw 'Package creation failed' }
+    } finally { Pop-Location }
+    Push-Location packages/dsh-toolbox-client
+    try {
+        pnpm.cmd pack --pack-destination ../../dist
+        if ($LASTEXITCODE -ne 0) { throw 'Client package creation failed' }
     } finally { Pop-Location }
 } finally { Pop-Location }

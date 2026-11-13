@@ -8,6 +8,12 @@ $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/Use-ProjectEnvironment.ps1"
 $acceptanceRoot = Split-Path $PSScriptRoot -Parent
 $packagePath = (Resolve-Path -LiteralPath $Package).Path
+$acceptanceManifestText = & tar.exe -xOf $packagePath package/package.json
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect packaged plugin manifest' }
+$acceptanceManifest = ($acceptanceManifestText -join "`n") | ConvertFrom-Json
+if ($acceptanceManifest.dsh.bundle.patch -ne './cordis.patch.yml') {
+    throw 'This script verifies the legacy headless Bundle. Human preview packages require the real GUI acceptance workflow in docs/INTEGRATION_H1.zh-CN.md.'
+}
 $runId = [guid]::NewGuid().ToString()
 $env:DSH_HOME = Join-Path $acceptanceRoot "runtime/package-acceptance/$runId"
 $env:DSH_TOOLBOX_DATA_DIR = Join-Path $env:DSH_HOME 'toolbox-data'
