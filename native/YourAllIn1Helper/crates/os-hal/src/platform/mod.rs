@@ -1,5 +1,6 @@
 //! 原生适配器装配入口；业务模块只依赖 Trait，不依赖这里的具体实现。
 mod biometry;
+mod clipboard_source;
 mod input;
 mod ocr;
 mod regions;
@@ -17,6 +18,10 @@ mod windows;
 mod winocr;
 
 pub use biometry::{touch_id_probe, TouchIdProbe};
+pub use clipboard_source::{
+    clipboard_owner_snapshot, resolve_clipboard_source, ClipboardOwnerSnapshot,
+    ClipboardSourceDecision,
+};
 pub use secure::{
     clipboard_content_is_concealed, write_animated_gif_clipboard, write_rgba_clipboard,
 };

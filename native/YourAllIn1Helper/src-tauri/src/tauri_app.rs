@@ -1177,6 +1177,7 @@ fn start_clipboard_listener(app: &AppHandle) {
                 }
                 let clipboard = clipboard.as_mut().expect("initialized above");
                 // 通道一：优先检查系统剪贴板文本变更
+                let text_before = os_hal::clipboard_owner_snapshot();
                 match clipboard.get_text() {
                     Ok(text) if !text.trim().is_empty() && Some(&text) != last_text.as_ref() => {
                         // 敏感内容（带 Windows 排除历史标记 / macOS ConcealedType）绝不收录进历史；
@@ -1185,8 +1186,17 @@ fn start_clipboard_listener(app: &AppHandle) {
                             last_text = Some(text);
                             return Ok(());
                         }
+                        let text_after = os_hal::clipboard_owner_snapshot();
+                        let source =
+                            match os_hal::resolve_clipboard_source(&text_before, &text_after) {
+                                os_hal::ClipboardSourceDecision::Use(source) => source,
+                                // 内容读取期间剪贴板又变化：本轮不把新内容与旧所有者拼接。
+                                os_hal::ClipboardSourceDecision::Changed => return Ok(()),
+                            };
                         let ctx = host.kernel().context();
-                        if let Ok(Some(_)) = host.clipboard.capture_text(ctx, &text, None) {
+                        if let Ok(Some(_)) =
+                            host.clipboard.capture_text(ctx, &text, source.as_deref())
+                        {
                             emit_update(&app_handle);
                         }
                         last_text = Some(text);
@@ -1198,6 +1208,7 @@ fn start_clipboard_listener(app: &AppHandle) {
                     }
                     Err(_) => {
                         // 若读取文本失败，可能是剪贴板当前为图片，进入通道二检查图片变更
+                        let image_before = os_hal::clipboard_owner_snapshot();
                         if let Ok(image) = clipboard.get_image() {
                             let img_hash =
                                 mod_clipboard::ClipboardModule::compute_hash("image", &image.bytes);
@@ -1207,13 +1218,21 @@ fn start_clipboard_listener(app: &AppHandle) {
                                     last_image_hash = Some(img_hash);
                                     return Ok(());
                                 }
+                                let image_after = os_hal::clipboard_owner_snapshot();
+                                let source = match os_hal::resolve_clipboard_source(
+                                    &image_before,
+                                    &image_after,
+                                ) {
+                                    os_hal::ClipboardSourceDecision::Use(source) => source,
+                                    os_hal::ClipboardSourceDecision::Changed => return Ok(()),
+                                };
                                 let ctx = host.kernel().context();
                                 if let Ok(Some(_)) = host.clipboard.capture_image_rgba(
                                     ctx,
                                     image.width as u32,
                                     image.height as u32,
                                     &image.bytes,
-                                    None,
+                                    source.as_deref(),
                                 ) {
                                     emit_update(&app_handle);
                                 }
