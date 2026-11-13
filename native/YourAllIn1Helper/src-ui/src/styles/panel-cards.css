@@ -1,0 +1,65 @@
+/* Shared by feature panels, including nested Vue components. */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+
+.metric-card {
+  background: var(--macos-bg-card);
+  border: 1px solid var(--macos-border-subtle);
+  border-radius: var(--macos-radius-md);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.metric-label {
+  font-size: 11px;
+  color: var(--macos-text-secondary);
+}
+
+.metric-val {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--macos-text-primary);
+  margin: 4px 0 2px 0;
+}
+
+.metric-sub {
+  font-size: 10px;
+  color: var(--macos-text-tertiary);
+}
+
+.section-card {
+  background: var(--macos-bg-card);
+  border: 1px solid var(--macos-border-subtle);
+  border-radius: var(--macos-radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card-header-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.card-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.card-desc {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--macos-text-tertiary);
+}
+
+
+.toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }

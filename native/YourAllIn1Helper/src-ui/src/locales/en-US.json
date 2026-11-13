@@ -815,7 +815,7 @@
     "pin": "Pin Window",
     "unpin": "Unpin Window",
     "close": "Close",
-    "keychainCredentials": "Keys are stored in the macOS login keychain (items owned by this app) and never written to config, database or logs; the system may ask for keychain access the first time.",
+    "keychainCredentials": "Keys are stored in the system credential store (Windows Credential Manager or macOS login keychain, in items owned by this app), never in config, database or logs. First access may require system authorization.",
     "apiKeyPlaceholderKeychain": "Enter API Key (saved to system keychain)"
   },
   "vault": {
