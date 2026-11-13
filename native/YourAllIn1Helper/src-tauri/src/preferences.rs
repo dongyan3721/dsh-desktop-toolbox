@@ -85,7 +85,7 @@ impl DesktopHost {
             row["optional"] = json!(optional);
             row["enabled"] = json!(self.kernel.registry().is_enabled(&spec.module_id));
             row["editable"] = json!(true);
-            row["native_error"] = json!(self.native_shortcut_error(&spec.action_id));
+            attach_native_diagnosis(&mut row, self.native_shortcut_error(&spec.action_id));
             rows.push(row);
         }
         for binding in ctx.shortcut_registry.list_all() {
@@ -98,7 +98,10 @@ impl DesktopHost {
             let mut row = serde_json::to_value(&binding)?;
             row["enabled"] = json!(true);
             row["editable"] = json!(false);
-            row["native_error"] = json!(self.native_shortcut_error(&binding.spec.action_id));
+            attach_native_diagnosis(
+                &mut row,
+                self.native_shortcut_error(&binding.spec.action_id),
+            );
             rows.push(row);
         }
         rows.sort_by(|a, b| {
@@ -199,6 +202,19 @@ impl DesktopHost {
                 .open_window(WindowSpec::feature(module_id, module.name))?;
             Ok(json!({"label":format!("feature-{module_id}"),"module_id":module_id, "active_window_count":self.kernel.context().window_pool.active_window_count(), "active_windows":self.kernel.context().window_pool.list_active_windows()}))
         })
+    }
+}
+
+fn attach_native_diagnosis(row: &mut Value, error: Option<String>) {
+    match error {
+        Some(error) => {
+            row["diagnosis"] = crate::shortcut_conflicts::diagnose_stored_native_error(&error);
+            row["native_error"] = json!(error);
+        }
+        None => {
+            row["native_error"] = Value::Null;
+            row["diagnosis"] = Value::Null;
+        }
     }
 }
 
@@ -588,5 +604,38 @@ mod tests {
         );
         assert_eq!(host.kernel.context().window_pool.active_window_count(), 0);
         assert!(host.open_feature_panel("media_proc").is_err());
+    }
+
+    #[test]
+    fn native_registration_text_is_classified_without_copying_a_guessed_program() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = DesktopHost::bootstrap(dir.path(), true).unwrap();
+        host.set_native_shortcut_failures(std::collections::HashMap::from([(
+            "clipboard:toggle_popup".into(),
+            "Ctrl+Alt+D：Access is denied. (os error 5) pid 9 notepad.exe".into(),
+        )]));
+        let preferences = host.shortcut_preferences().unwrap();
+        let row = preferences["shortcuts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["spec"]["action_id"] == "clipboard:toggle_popup")
+            .unwrap();
+        assert!(row["native_error"]
+            .as_str()
+            .unwrap()
+            .contains("os error 5"));
+        assert_eq!(row["diagnosis"]["category"], "system_denied");
+        assert_eq!(row["diagnosis"]["os_error_code"].as_u64(), Some(5));
+        assert!(row["diagnosis"]["owner"].is_null());
+        assert!(!row["diagnosis"].to_string().contains("notepad"));
+        let clear = preferences["shortcuts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["spec"]["action_id"] == "screenshot:capture")
+            .unwrap();
+        assert!(clear["native_error"].is_null());
+        assert!(clear["diagnosis"].is_null());
     }
 }

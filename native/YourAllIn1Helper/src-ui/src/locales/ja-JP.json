@@ -991,7 +991,7 @@
       "window_pin_pick_cursor": "ウィンドウを選択"
     },
     "shortcutConflict": "このキーは別の機能で使用中です。別の組み合わせを選択してください。",
-    "shortcutUnavailable": "このキーを登録できません。他のアプリで使用されている可能性があります。",
+    "shortcutUnavailable": "このキーを登録できません。詳細を開いてシステムの原文を確認してください。",
     "notAssigned": "未設定",
     "clear": "解除",
     "checkShortcuts": "競合を確認",
@@ -1002,10 +1002,71 @@
     "checkStatus": {
       "available": "現在利用可能・競合なし",
       "unassigned": "未設定",
-      "os_unavailable": "システムが登録できません。他のアプリや OS が使用している可能性があります",
+      "os_unavailable": "システムはこの組み合わせを登録できません。理由は詳細を開いて確認してください。",
       "invalid": "未対応のキーの組み合わせです",
       "probe_error": "確認を完了できませんでした。再試行してください",
       "not_checked": "システムでの使用状況は未確認"
+    },
+    "diagnosis": {
+      "nativeUnavailable": "この確認ではシステムへホットキーを登録していないため、他のプログラムが使用中かは判断できません。",
+      "recheck": "再確認",
+      "showDetails": "詳細を表示",
+      "combo": "キーの組み合わせ",
+      "action": "動作",
+      "category": "分類",
+      "osError": "システムエラー",
+      "subjects": "ツールボックス内の使用元",
+      "owner": "使用中のプログラム",
+      "ownerConfirmed": "確認済み：{program}（PID {pid}）",
+      "ownerUnknown": "システムは使用中のプログラムを返していません",
+      "raw": "生の詳細",
+      "rawEmpty": "追加の生エラーはありません",
+      "guidance": "実行できる確認",
+      "suggestions": "調査の提案",
+      "suggestionsNote": "以下は使用元として確認されたものではありません。",
+      "categories": {
+        "internal_conflict": "内部の競合",
+        "invalid_combo": "無効な組み合わせ",
+        "system_reserved": "システム予約",
+        "system_denied": "システムが拒否",
+        "registration_occupied": "登録済み",
+        "probe_failed": "調査失敗",
+        "not_checked": "未確認",
+        "unknown_system_failure": "システムの失敗（未分類）",
+        "available": "利用可能",
+        "unassigned": "未設定"
+      },
+      "summary": {
+        "internal_conflict": "{combo} はツールボックス内の別のショートカットと重複しています：{names}",
+        "invalid_combo": "{combo} は「{action}」のショートカットに使えません",
+        "system_reserved": "Windows は {combo} を予約しているため、「{action}」に登録できません。システムはプログラムを特定していません。",
+        "system_denied": "システムは {combo} を「{action}」に登録することを拒否しました。プログラムは特定されていません。",
+        "registration_occupied": "{combo} を「{action}」に登録できません。システムエラー {code} は、この組み合わせが既に登録されていることを示します。システムはプログラムを特定していません。",
+        "registration_occupied_no_code": "{combo} を「{action}」に登録できません。システムは登録済みと返し、プログラムは特定していません。",
+        "probe_failed": "{combo}（{action}）の確認は完了しませんでした。他のプログラムが使用中だとは示しません。",
+        "not_checked": "{combo}（{action}）のシステム登録状態は未確認です。",
+        "unknown_system_failure": "{combo} を「{action}」へ登録する処理が失敗しました。このエラーは他のプログラムの使用を示しません。",
+        "available": "現在利用可能・競合なし",
+        "unassigned": "未設定"
+      },
+      "guidanceText": {
+        "owner_unknown": "システムはプログラム名もプロセス番号も返していません。",
+        "recheck": "関係がありそうなプログラムを終了してから「再確認」を押してください。このツールボックスは他のプログラムを終了しません。",
+        "change_combo": "別の組み合わせに変えてから再確認することもできます。キーは自動では変更しません。",
+        "probe_failed": "調査は完了しませんでした。もう一度確認してください。",
+        "cleanup_failed": "一時的な登録を解除できませんでした。再試行してください。失敗が続く場合はツールボックスを再起動してから確認してください。",
+        "not_checked": "この結果にはシステム登録の調査が含まれていません。",
+        "system_denied": "システムは登録を拒否し、プログラム名は返していません。",
+        "invalid": "修飾キーとメインキーを含む組み合わせを選んでください。",
+        "reserved_f12": "Windows の文書では、F12 は常にデバッガー用に予約され、ホットキーとして登録しないよう書かれています。",
+        "unknown_failure": "上の生の詳細を確認してください。システムはこれを他のプログラムによる使用とは分類していません。",
+        "internal": "どちらかの動作の組み合わせを変更してください。"
+      },
+      "suggestionText": {
+        "app_settings": "使用中のソフトウェアのショートカット設定で、同じ組み合わせを探してください。",
+        "common_tools": "スクリーンショット、入力方式、リモート制御、音声、スクリプトの各ツールを一つずつ終了してから再確認できます。この順序は調査の提案です。",
+        "windows_key": "Microsoft の文書では、Windows キーを含む組み合わせはオペレーティングシステム用に予約されています。これで特定のプログラムは決まりません。"
+      }
     }
   },
   "feedback": {

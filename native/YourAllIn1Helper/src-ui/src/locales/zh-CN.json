@@ -991,7 +991,7 @@
       "window_pin_pick_cursor": "准星选择窗口"
     },
     "shortcutConflict": "此快捷键已被其他功能使用，请更换组合键。",
-    "shortcutUnavailable": "此快捷键未能注册，可能被其他程序占用。请更换后保存。",
+    "shortcutUnavailable": "此快捷键未能注册。请展开详情查看系统返回的原因。",
     "notAssigned": "未设置",
     "clear": "清除",
     "checkShortcuts": "检测冲突",
@@ -1002,10 +1002,71 @@
     "checkStatus": {
       "available": "当前可用，未发现冲突",
       "unassigned": "未设置",
-      "os_unavailable": "系统无法注册：可能被其他程序占用或由系统保留",
+      "os_unavailable": "系统无法注册此组合键。请展开详情查看原因。",
       "invalid": "组合键格式不受支持",
       "probe_error": "检测未完成，请重试",
       "not_checked": "尚未检测系统占用"
+    },
+    "diagnosis": {
+      "nativeUnavailable": "这次检测没有向系统注册热键，因此不能判断外部程序是否占用。",
+      "recheck": "重新检测",
+      "showDetails": "查看详情",
+      "combo": "组合键",
+      "action": "动作",
+      "category": "错误分类",
+      "osError": "系统错误码",
+      "subjects": "工具箱内占用",
+      "owner": "占用程序",
+      "ownerConfirmed": "已确认：{program}（PID {pid}）",
+      "ownerUnknown": "系统未提供占用程序信息",
+      "raw": "原始详情",
+      "rawEmpty": "没有更多原始错误",
+      "guidance": "可执行的排查",
+      "suggestions": "排查建议",
+      "suggestionsNote": "以下内容不是已确认的占用程序。",
+      "categories": {
+        "internal_conflict": "内部冲突",
+        "invalid_combo": "非法组合",
+        "system_reserved": "系统保留",
+        "system_denied": "系统不允许",
+        "registration_occupied": "已被注册",
+        "probe_failed": "探测失败",
+        "not_checked": "未检测",
+        "unknown_system_failure": "系统失败，原因未分类",
+        "available": "可用",
+        "unassigned": "未设置"
+      },
+      "summary": {
+        "internal_conflict": "{combo} 与本工具箱内的其他快捷键重复：{names}",
+        "invalid_combo": "{combo} 不能用作「{action}」的快捷键",
+        "system_reserved": "{combo} 被 Windows 保留，不能注册给「{action}」。系统未提供占用程序信息。",
+        "system_denied": "系统不允许把 {combo} 注册给「{action}」。系统未提供占用程序信息。",
+        "registration_occupied": "{combo} 无法注册给「{action}」。系统错误 {code} 表示该组合键已被注册。系统未提供占用程序信息。",
+        "registration_occupied_no_code": "{combo} 无法注册给「{action}」。系统表示该组合键已被注册。系统未提供占用程序信息。",
+        "probe_failed": "检测 {combo}（{action}）时没有完成。这不能说明是其他程序占用。",
+        "not_checked": "尚未检测 {combo}（{action}）的系统注册状态。",
+        "unknown_system_failure": "系统注册 {combo} 给「{action}」失败。该错误不能说明是其他程序占用。",
+        "available": "当前可用，未发现冲突",
+        "unassigned": "未设置"
+      },
+      "guidanceText": {
+        "owner_unknown": "系统未提供占用程序的名称或进程号。",
+        "recheck": "退出可能相关的程序后，使用「重新检测」。本工具不会关闭其他程序。",
+        "change_combo": "也可以改用另一个组合键后再检测。本工具不会自动改键。",
+        "probe_failed": "探测没有完成。请再检测一次。",
+        "cleanup_failed": "临时注册之后没能取消。请重试。若仍失败，重启本工具箱后再检测。",
+        "not_checked": "当前结果没有包含系统注册探测。",
+        "system_denied": "系统拒绝了这次注册，且没有说明是哪一个程序。",
+        "invalid": "请换一个包含修饰键和主键的组合。",
+        "reserved_f12": "Windows 文档写明 F12 始终保留给调试器，不应注册为热键。",
+        "unknown_failure": "请查看上面的原始详情。系统没有把它归类为其他程序占用。",
+        "internal": "请为其中一个动作更换组合键。"
+      },
+      "suggestionText": {
+        "app_settings": "在你正在使用的软件的快捷键设置里查找同一个组合键。",
+        "common_tools": "可依次退出截图、输入法、远程控制、语音和脚本工具后再检测。这个顺序只是排查建议。",
+        "windows_key": "微软文档说明，涉及 Windows 键的组合键保留给操作系统。这不能确定具体程序。"
+      }
     }
   },
   "feedback": {

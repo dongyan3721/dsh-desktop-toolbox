@@ -4,6 +4,10 @@ use app_core::ShortcutNormalizer;
 use tauri::AppHandle;
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
+#[path = "shortcut_diagnostics.rs"]
+mod shortcut_diagnostics;
+pub(crate) use shortcut_diagnostics::diagnose_stored_native_error;
+
 // Serialize actual OS registration changes, including dynamic script bindings.
 pub(crate) static NATIVE_SHORTCUT_GATE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
@@ -87,6 +91,7 @@ impl DesktopHost {
             hotkey.unwrap_or_else(|| row["spec"]["default_logical_hotkey"].as_str().unwrap_or(""));
         let mut check = json!({"action_id":action,"hotkey":effective,"display_label":"","status":"unassigned","conflicts":[]});
         if effective.is_empty() && row["optional"] == true {
+            attach_diagnosis(&mut check, "");
             return Ok(check);
         }
         let os = self.kernel.context().shortcut_registry.target_os();
@@ -95,6 +100,7 @@ impl DesktopHost {
             Err(error) => {
                 check["status"] = json!("invalid");
                 check["detail"] = json!(error.to_string());
+                attach_diagnosis(&mut check, effective);
                 return Ok(check);
             }
         };
@@ -111,6 +117,7 @@ impl DesktopHost {
         if !conflicts.is_empty() {
             check["status"] = json!("internal_conflict");
             check["conflicts"] = json!(conflicts);
+            attach_diagnosis(&mut check, &physical);
             return Ok(check);
         }
         let (status, detail) = match native(&physical) {
@@ -121,6 +128,7 @@ impl DesktopHost {
         };
         check["status"] = json!(status);
         check["detail"] = json!(detail);
+        attach_diagnosis(&mut check, &physical);
         Ok(check)
     }
 
@@ -137,6 +145,18 @@ impl DesktopHost {
         }
         Ok(json!({"checks":checks}))
     }
+}
+
+fn attach_diagnosis(check: &mut Value, accelerator: &str) {
+    let status = check["status"].as_str().unwrap_or("").to_string();
+    let detail = check["detail"].as_str().map(str::to_string);
+    let conflicts = check["conflicts"].as_array().cloned().unwrap_or_default();
+    check["diagnosis"] = shortcut_diagnostics::diagnose_check(
+        &status,
+        detail.as_deref(),
+        accelerator,
+        &conflicts,
+    );
 }
 
 #[cfg(test)]
@@ -222,6 +242,18 @@ mod tests {
             check["conflicts"][0]["spec"]["action_id"],
             "screenshot:capture"
         );
+        assert_eq!(check["diagnosis"]["category"], "internal_conflict");
+        assert!(check["diagnosis"]["owner"].is_null());
+        assert_eq!(
+            check["diagnosis"]["subjects"][0]["module_id"],
+            "screenshot"
+        );
+        assert_eq!(
+            check["diagnosis"]["subjects"][0]["action_id"],
+            "screenshot:capture"
+        );
+        assert_eq!(check["diagnosis"]["subjects"][0]["kind"], "module_action");
+        assert_eq!(check["diagnosis"]["subjects"][0]["enabled"], false);
         host.kernel
             .context()
             .shortcut_registry
@@ -230,15 +262,21 @@ mod tests {
                 None,
             )
             .unwrap();
-        assert_eq!(
-            host.check_shortcut(
+        let script = host
+            .check_shortcut(
                 "media_proc:open_panel",
                 Some("Shift+Ctrl+F12"),
-                |_| panic!()
+                |_| panic!(),
             )
-            .unwrap()["status"],
-            "internal_conflict"
+            .unwrap();
+        assert_eq!(script["status"], "internal_conflict");
+        assert_eq!(script["diagnosis"]["subjects"][0]["kind"], "script");
+        assert_eq!(script["diagnosis"]["subjects"][0]["action_id"], "script:qa");
+        assert_eq!(
+            script["diagnosis"]["subjects"][0]["description"],
+            "QA script"
         );
+        assert!(script["diagnosis"]["owner"].is_null());
         assert_eq!(
             host.check_shortcut("media_proc:open_panel", None, |_| panic!())
                 .unwrap()["status"],
@@ -262,13 +300,48 @@ mod tests {
     fn scans_report_os_unavailability_and_headless_unknown_without_probing_unassigned_keys() {
         let dir = tempfile::tempdir().unwrap();
         let host = DesktopHost::bootstrap(dir.path(), true).unwrap();
-        assert_eq!(
-            host.check_shortcut("clipboard:toggle_popup", Some("Ctrl+Shift+V"), |_| {
+        let reserved_word = host
+            .check_shortcut("clipboard:toggle_popup", Some("Ctrl+Shift+V"), |_| {
                 NativeCheck::Unavailable("reserved".into())
             })
-            .unwrap()["status"],
-            "os_unavailable"
+            .unwrap();
+        assert_eq!(reserved_word["status"], "os_unavailable");
+        assert_eq!(reserved_word["detail"], "reserved");
+        assert_eq!(
+            reserved_word["diagnosis"]["category"],
+            "unknown_system_failure"
         );
+        assert!(reserved_word["diagnosis"]["owner"].is_null());
+        assert!(reserved_word["diagnosis"]["suggestions"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let occupied = host
+            .check_shortcut("clipboard:toggle_popup", Some("Ctrl+Shift+V"), |_| {
+                NativeCheck::Unavailable(
+                    "HotKey already registered: HotKey { mods: (CONTROL), key: KeyV }".into(),
+                )
+            })
+            .unwrap();
+        assert_eq!(occupied["status"], "os_unavailable");
+        assert_eq!(occupied["diagnosis"]["category"], "registration_occupied");
+        assert_eq!(occupied["diagnosis"]["os_error_code"].as_u64(), Some(1409));
+        assert!(occupied["diagnosis"]["owner"].is_null());
+        let cleanup = host
+            .check_shortcut("clipboard:toggle_popup", Some("F8"), |_| {
+                NativeCheck::ProbeError(
+                    "Temporary shortcut cleanup failed: cleanup failed; cleanup failed".into(),
+                )
+            })
+            .unwrap();
+        assert_eq!(cleanup["status"], "probe_error");
+        assert_eq!(cleanup["diagnosis"]["category"], "probe_failed");
+        assert!(cleanup["diagnosis"]["owner"].is_null());
+        assert!(cleanup["diagnosis"]["guidance"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "cleanup_failed"));
         let mut count = 0;
         let scan = host
             .check_all_shortcuts(|_| {
@@ -278,6 +351,14 @@ mod tests {
             .unwrap();
         assert_eq!(count, 8);
         assert_eq!(scan["checks"].as_array().unwrap().len(), 21);
+        let clipboard = scan["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|check| check["action_id"] == "clipboard:toggle_popup")
+            .unwrap();
+        assert_eq!(clipboard["diagnosis"]["category"], "not_checked");
+        assert!(clipboard["diagnosis"]["owner"].is_null());
         assert_eq!(
             scan["checks"]
                 .as_array()

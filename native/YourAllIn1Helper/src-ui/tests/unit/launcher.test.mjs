@@ -31,14 +31,16 @@ test('shortcut recorder uses physical letter keys and rejects IME, repeats, modi
 
 async function preferencesHarness(invoke) {
   const component = await readFile(new URL('../../src/components/PreferencesPanel.vue', import.meta.url), 'utf8');
+  const helper = await readFile(new URL('../../src/utils/shortcutDiagnostics.ts', import.meta.url), 'utf8');
   const script = component.match(/<script setup lang="ts">([\s\S]*?)<\/script>/)[1].replace(/import\s+[\s\S]*?from\s+['"][^'"]+['"];?/g, '');
   const callbacks = [];
   const context = vm.createContext({
     ref: value => ({ value }), computed: fn => ({ get value() { return fn(); } }),
     defineProps: () => ({}), defineEmits: () => () => {}, onMounted: () => {}, onUnmounted: fn => callbacks.push(fn),
-    invokeIpc: invoke, t: key => key, notify: () => {},
+    invokeIpc: invoke, t: (key, params) => params ? `${key}:${JSON.stringify(params)}` : key, notify: () => {},
   });
   compile(source.replace(/export /g, ''), context);
+  compile(helper.replace(/export /g, ''), context);
   compile(script, context);
   return { run: expr => vm.runInContext(expr, context), callbacks };
 }
@@ -138,6 +140,32 @@ test('a bulk scan includes unsaved drafts and drops stale scans when the user ed
   await second;
   assert.equal(run('scanSummary.value.issues'), 0);
   assert.equal(run('scanSummary.value.count'), 1);
+});
+test('recheck sends the current draft and a host that never probes stays unavailable', async () => {
+  const calls = [];
+  const { run } = await preferencesHarness(async (cmd, args) => {
+    calls.push({ cmd, args });
+    if (cmd === 'kernel_check_shortcuts') return { checks: [{ action_id: 'clipboard:toggle_popup', status: 'not_checked', hotkey: 'Ctrl+Alt+D', display_label: 'Ctrl + Alt + D' }] };
+    return { action_id: args.action_id, hotkey: args.hotkey, status: 'os_unavailable', detail: 'foreground ShareX pid 4', physical_accelerator: 'Ctrl+Shift+F8', display_label: 'Ctrl + Shift + F8' };
+  });
+  run(`shortcuts.value = [${JSON.stringify({ ...row, native_error: 'Ctrl+Alt+D：Access is denied. (os error 5) notepad.exe' })}]`);
+  const stored = JSON.parse(run('JSON.stringify(presentation(shortcuts.value[0]))'));
+  assert.equal(stored.category, 'system_denied');
+  assert.equal(stored.owner, null);
+  assert.equal(stored.showDetails, true);
+  assert.match(stored.raw, /os error 5/);
+  run("draft.value['clipboard:toggle_popup'] = 'Ctrl+Shift+F8'");
+  await run('recheckShortcut(shortcuts.value[0])');
+  assert.equal(calls.at(-1).cmd, 'kernel_check_shortcut');
+  assert.equal(calls.at(-1).args.hotkey, 'Ctrl+Shift+F8');
+  const after = JSON.parse(run("JSON.stringify(presentation(shortcuts.value[0]))"));
+  assert.equal(after.category, 'unknown_system_failure');
+  assert.equal(after.owner, null);
+  assert.match(after.summaryParams.combo, /Ctrl \+ Shift \+ F8|Ctrl\+Shift\+F8/);
+  run("delete draft.value['clipboard:toggle_popup']");
+  await run('checkAllShortcuts()');
+  assert.equal(run('probeUnavailable.value'), true);
+  assert.equal(run('scanSummary.value'), null);
 });
 
 

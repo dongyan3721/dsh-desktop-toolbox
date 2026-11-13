@@ -991,7 +991,7 @@
       "window_pin_pick_cursor": "Pick a window"
     },
     "shortcutConflict": "Another tool uses this shortcut. Choose another combination.",
-    "shortcutUnavailable": "This shortcut could not be registered. Another app may be using it.",
+    "shortcutUnavailable": "This shortcut could not be registered. Expand the details for the system message.",
     "notAssigned": "Not assigned",
     "clear": "Clear",
     "checkShortcuts": "Check conflicts",
@@ -1002,10 +1002,71 @@
     "checkStatus": {
       "available": "Available now; no conflict found",
       "unassigned": "Not assigned",
-      "os_unavailable": "The system cannot register this key; another app or the OS may reserve it",
+      "os_unavailable": "The system could not register this combination. Expand the details for the reason.",
       "invalid": "Unsupported key combination",
       "probe_error": "Could not complete the check; retry",
       "not_checked": "System availability has not been checked"
+    },
+    "diagnosis": {
+      "nativeUnavailable": "This check did not register a hotkey with the system, so it cannot tell whether another program holds it.",
+      "recheck": "Check again",
+      "showDetails": "Show details",
+      "combo": "Combination",
+      "action": "Action",
+      "category": "Classification",
+      "osError": "System error",
+      "subjects": "Held inside this toolbox",
+      "owner": "Program",
+      "ownerConfirmed": "Confirmed: {program} (PID {pid})",
+      "ownerUnknown": "The system did not identify the program that holds this hotkey",
+      "raw": "Raw details",
+      "rawEmpty": "No further raw error",
+      "guidance": "What you can do",
+      "suggestions": "Suggestions to investigate",
+      "suggestionsNote": "These items are not a confirmed owner.",
+      "categories": {
+        "internal_conflict": "Internal conflict",
+        "invalid_combo": "Invalid combination",
+        "system_reserved": "Reserved by the system",
+        "system_denied": "Not allowed by the system",
+        "registration_occupied": "Already registered",
+        "probe_failed": "Probe failed",
+        "not_checked": "Not checked",
+        "unknown_system_failure": "System failure, unclassified",
+        "available": "Available",
+        "unassigned": "Not assigned"
+      },
+      "summary": {
+        "internal_conflict": "{combo} duplicates another shortcut in this toolbox: {names}",
+        "invalid_combo": "{combo} cannot be used for {action}",
+        "system_reserved": "Windows reserves {combo}, so it cannot be registered for {action}. The system did not identify a program.",
+        "system_denied": "The system refused to register {combo} for {action}. It did not identify a program.",
+        "registration_occupied": "{combo} could not be registered for {action}. System error {code} means the combination is already registered. The system did not identify a program.",
+        "registration_occupied_no_code": "{combo} could not be registered for {action}. The system says the combination is already registered and did not identify a program.",
+        "probe_failed": "The check for {combo} ({action}) did not finish. That does not show another program holds it.",
+        "not_checked": "System registration for {combo} ({action}) has not been checked.",
+        "unknown_system_failure": "The system failed to register {combo} for {action}. This error does not show that another program holds it.",
+        "available": "Available now; no conflict found",
+        "unassigned": "Not assigned"
+      },
+      "guidanceText": {
+        "owner_unknown": "The system did not provide a program name or process id.",
+        "recheck": "Quit the programs you want to rule out, then choose Check again. This toolbox will not close other programs.",
+        "change_combo": "You can also try another combination and check again. This toolbox will not change the key for you.",
+        "probe_failed": "The probe did not finish. Check again.",
+        "cleanup_failed": "A temporary registration could not be removed. Try again. If it still fails, restart this toolbox and check again.",
+        "not_checked": "This result does not include a system registration probe.",
+        "system_denied": "The system refused the registration and did not name a program.",
+        "invalid": "Choose a combination with a modifier and one main key.",
+        "reserved_f12": "Windows documentation says F12 is reserved for the debugger and should not be registered as a hotkey.",
+        "unknown_failure": "Read the raw details above. The system did not classify this as another program holding the key.",
+        "internal": "Choose a different combination for one of the actions."
+      },
+      "suggestionText": {
+        "app_settings": "Look for the same combination in the shortcut settings of software you are using.",
+        "common_tools": "You can quit screenshot, input-method, remote-control, voice, and script tools one at a time, then check again. That order is only a suggestion.",
+        "windows_key": "Microsoft documents combinations that use the Windows key as reserved for the operating system. That does not identify a program."
+      }
     }
   },
   "feedback": {
