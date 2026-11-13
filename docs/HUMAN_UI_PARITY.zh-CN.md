@@ -1,5 +1,7 @@
 # 人用优先：主控台与十模块界面与快捷键对等矩阵 (Human UI & Shortcut Parity)
 
+Codex H1 实测更新：原主窗/偏好、便笺面板与独立便笺、保存/关闭/唤醒/重启、便笺临时全局键、冲突/清除/默认、Esc/Tab 已通过真实 UI/OS 输入验收，见 [INTEGRATION_H1](INTEGRATION_H1.zh-CN.md)。下表原“待验”列是 Agent 交付时的状态；除上述 H1 范围外，其余默认键与模块操作仍待 H2 逐项验收，不能据总体测试数宣称都已通过。
+
 ## 1. 概述与验证准则
 
 依据 `docs/HUMAN_FIRST_PLAN.zh-CN.md`、`docs/H1_CONTRACT.md` 与固定原项目 HEAD (`575075139fddc8b96d8db1a313c2fe404959c108`) 源码逐项核对。

@@ -1,27 +1,18 @@
-# H0/H1 人用优先派工与进展
+# H1 人用优先派工与集成结果
 
-2026-11-13 用户授权实施。三位使用原本机模型与已有独立工作树，Codex 已将经验证的 main 同步合并到各分支，并核对同步后文件内容一致；没有新建工作树，也没有丢弃旧交付历史。
+2026-11-13。三位沿用已有分支/工作树，Codex 将交付合入已有 integration/notes-mvp，审查修复并完成真实验收。没有另开分支或工作树。最终交付本机人用预览 0.1.0-alpha.6。
 
-| 负责人 | 同步提交 | 已发送的任务 | 观察状态 |
-| --- | --- | --- | --- |
-| Cursor / Grok 4.7 High | `7427cd6` | `tasks/CURSOR_H1.md`：Tauri 正式插件模式、单实例、私有控制管道、原快捷键与退出保存 | 连接反复中断曾停止重试，Codex 恢复原任务后已产生桌面启动/控制管道实现；尚未提交 H1 |
-| Antigravity / Gemini 3.8 Flash High | `ba6c700` | `tasks/ANTIGRAVITY_H1.md`：原 Vue 功能/偏好/面板、快捷键控件、对等清单与测试 | 已交 `a4f1637` 文档；Codex 发现 ID/事件名/测试覆盖表述不准，已退回核实修订，暂未集成 |
-| Zed / Claude Code ACP、自定义 DeepSeek Flash | `e02ae29` | `tasks/ZED_H1.md`：实际 Harness 人用可见入口核实、受支持的 Client/Host adapter | 已交 `b3a6592` 并集成；继续负责中文错误体验、稳定错误码与实际 SDK 验证收口 |
-| Codex | `integration/notes-mvp` | 共享契约、无 tools 依赖的运行服务、环境、集成和集中 GUI/物理按键验收 | 运行服务、入口适配和构建装配已提交；完整 JS 回归 113 通过；新 Tauri GUI 尚未验收 |
+| 负责人 | 交付提交 | 集成结果 |
+| --- | --- | --- |
+| Cursor / Grok 4.7 High | be5d8b7、af3a890 | 原 Tauri 正式插件模式、单实例/私有管道、原快捷键与保存退出；Codex 修正配置准备前取锁，并通过真实窗口测试 |
+| Antigravity / Gemini 3.8 Flash High | a4f1637、dad6b70 | 原 Vue/IPC/快捷键对等清单；审查纠正动作 ID、事件名与覆盖表述，未改写原 UI |
+| Zed / Claude Code ACP、自定义 DeepSeek Flash | b3a6592、54af057 | 真实外部 Client 及 sidebar/main slots、Host adapter、中文错误；Codex 按实际独立 provider 结果修正传输装配 |
+| Codex | integration/notes-mvp | 无 tools 依赖的桌面服务、构建/打包、实例锁修复、内置前端协议修复、受认证的精确 Connection 路由、完整集成与 GUI/OS 键/Electron/模型共存验收 |
 
-约定见 `H1_CONTRACT.md`。Rust 桌面源、Vue 源、Harness 入口和 Codex 运行服务各有独立写入范围。三位不启动 GUI 或全局按键测试，避免同时抢焦点、重复注册或访问个人数据。脚本、密码本和统计保持人用，不增加 Agent 工具。
+共 311 项自动测试通过：JS/集成 124、原 Vue 103、Rust 桌面库 65、原生桥库 19。原前端类型检查、生产构建及带 tauri/custom-protocol 的独立原生 Release 构建通过。默认人用装配不注册 Agent 工具。
 
-Codex 已在集成目录准备嵌套前端依赖，未触碰共享根 SDK junction。原 Vue 基线通过 `vue-tsc --noEmit`、Vite 生产构建与 **103 项前端测试**；此结果不是 GUI 实测。实际宿主相关 README/JS/manifest 追加到项目内共享 reference 目录，E 盘安装只读。
+真实验收包括：Web 和已登录 Electron 的可见入口，原主窗/偏好/便笺面板，便笺编辑保存/关闭/重开/进程重启，另一前台应用下临时全局键，冲突拦截/清除/默认/Esc/Tab，重复实例，父退出和装卸清理，数据保留，普通模型调用共存。实际控制路由无认证 401、跨来源 403。Windows CLI 热升级遇到运行文件占用，正常退出宿主再升级成功；不能宣称热替换通过。
 
-运行服务已完成第一组真实 Cordis Loader/受管理子进程/协议夹具测试，验证无 `tools` 服务也可工作、已知退出后的显式再打开、保存失败不伪报成功。夹具不创建窗口、托盘或快捷键；真实 GUI 验收仍待 Cursor 桌面交付与可见入口集成。
+完整版本、归档哈希、命令、证据及剩余范围见 [H1 验收记录](INTEGRATION_H1.zh-CN.md)。最终预览恢复安装并打开，登录和会话保留在 D 盘隔离目录；用 scripts/Open-HumanPreview.ps1 可再次打开同一实例。冻结 alpha.2 未覆盖，原 C 项目及个人数据库未改动。
 
-## 当前可审查集成结果
-
-集成工作树：`D:/Code/dsh-toolbox/.worktrees/integration`，最新实现提交 `18f9df9`，main 保留已验证发布基线和协调文档。
-
-- `4ccd5e5`：独立 `toolboxDesktop` 服务和桌面生命周期；无模型工具依赖，已知退出后仅用户显式打开才重启；保存关停失败明确报错。
-- `4bb4d0e`：集成 Zed 的真实公开 sidebar/main slots 入口及窄 Host RPC adapter。19 项入口定向测试通过，仍不是实际 Harness Client 加载/点击验收。
-- `18f9df9`：`./desktop`、`./human-entry` 导出、独立人用 patch 草案，以及原 Vue + Tauri 桌面构建/独立完整性清单脚本。脚本语法检查和 Host 构建通过；尚未构建或发布新桌面包。
-- 集成目录执行 `node --test tests/*.test.mjs packages/dsh-toolbox/tests/*.test.mjs`：**113 通过，0 失败**。包含既有真实原生/Loader 回归及桌面控制协议夹具；不含真实 Tauri/物理按键。
-
-下一项集中验收仍是：可见入口 → 原主窗/偏好 → 便笺创建/编辑/保存/重开/重启 → 另一前台应用下临时自定义全局键 → 冲突与默认恢复 → 卸载清理。需要先完成原生交付、审查及编译。密码本涉及手工验收，不由 Windows 自动化操作。构建、临时数据和产物继续留在 D 盘工作区；冻结 alpha.2 tgz 未覆盖。
+这是 H0/H1 人用纵向预览。H2 仍需逐模块验证其余默认键、原生窗口和启停观察器；H3 处理旧数据/用户配置导入。密码本由本人手工验收。源码存在和总体测试通过不代表十模块均已完成 GUI 实测。后续继续以人的使用体验为先，脚本、密码本和统计无需因没有 Agent Tool 而扩展接口。

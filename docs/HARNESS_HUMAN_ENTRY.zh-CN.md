@@ -1,5 +1,7 @@
 # 实际 Harness 0.2.2-rc.1 人用可见入口核实
 
+**Codex 集成结论更新：** 外部 Client 装载、sidebar/main slots 已在真实 Web 和已登录 Electron 验证成功。下文的 `/toolbox-human` generic RPC 是 Zed 勘察时的候选形状，实际独立 provider 下因 SDK shadow context 注入问题不能激活，alpha.3/.4 已判失败。当前 alpha.6 使用公开 Connection exact Fetch `/api/toolbox-human/{status,showMain,openPanel}` 和 Client `rpc.call('/api','toolbox-human/showMain',{},signal)`；认证和取消仍属于原 Connection carrier，没有修改核心。完整实现、真实验收和版本依据以 [INTEGRATION_H1](INTEGRATION_H1.zh-CN.md) 与 [H1_CONTRACT](H1_CONTRACT.md) 为准。下列早期实现/未测描述保留为勘察历史。
+
 日期：2026-11-13
 核实者：Zed（只读检查 E 盘安装，未启动 GUI）
 工作树：`D:\Code\dsh-toolbox\.worktrees\zed`
