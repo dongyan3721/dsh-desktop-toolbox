@@ -11,9 +11,50 @@ export const name = 'dsh-toolbox-human-entry'
 export const inject = ['connection']
 
 /** Generic Connection RPC channel shared with the browser client bundle. */
-export const HUMAN_ENTRY_CHANNEL = '/toolbox-human'
+export const HUMAN_ENTRY_CHANNEL = '/api'
+export const HUMAN_ENTRY_PREFIX = 'toolbox-human/'
 
 export const HUMAN_ENTRY_ENDPOINTS = Object.freeze(['status', 'showMain', 'openPanel'])
+
+async function controlEnvelope(request) {
+  const reader = request.body?.getReader()
+  if (!reader) throw new Error('missing request body')
+  const chunks = []
+  let size = 0
+  try {
+    while (true) {
+      request.signal.throwIfAborted()
+      const item = await reader.read()
+      if (item.done) break
+      size += item.value.length
+      if (size > 4096) { await reader.cancel(); return undefined }
+      chunks.push(item.value)
+    }
+  } finally { reader.releaseLock() }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length }
+  return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+}
+
+function exactRoute(endpoint, handler) {
+  const method = `${HUMAN_ENTRY_PREFIX}${endpoint}`
+  return {
+    path: `${HUMAN_ENTRY_CHANNEL}/${method}`,
+    methods: ['POST'],
+    requestBody: 'streaming',
+    async fetch(request) {
+      if (request.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== 'application/json') return new Response('JSON required', { status: 415 })
+      let envelope
+      try { envelope = await controlEnvelope(request) }
+      catch (error) { if (request.signal.aborted) throw error; return new Response('invalid request', { status: 400 }) }
+      if (envelope === undefined) return new Response('request too large', { status: 413 })
+      if (!envelope || envelope.type !== 'client-request' || envelope.method !== method
+        || typeof envelope.rpcId !== 'string' || envelope.rpcId.length < 1 || envelope.rpcId.length > 128) return new Response('invalid request', { status: 400 })
+      return Response.json({ type: 'server-response', rpcId: envelope.rpcId, result: await handler(endpoint, envelope.payload, request.signal) })
+    },
+  }
+}
 
 const MAX_MODULE_ID_SCALARS = 80
 const MAX_ERROR_MESSAGE_CHARS = 300
@@ -212,16 +253,16 @@ export function createHumanEntryHandler(getDesktop) {
  * @param {object} ctx - Host plugin context.
  */
 export function apply(ctx) {
-  const connection = ctx.get?.('connection') ?? ctx.connection
+  const connection = ctx.connection ?? ctx.get?.('connection')
   if (connection === null || typeof connection !== 'object'
-    || connection.rpc === null || typeof connection.rpc !== 'object'
-    || typeof connection.rpc.handle !== 'function') {
+    || connection.fetch === null || typeof connection.fetch !== 'object'
+    || typeof connection.fetch.register !== 'function') {
     throw new Error('dsh-toolbox human entry requires the Host connection service')
   }
 
   const handler = createHumanEntryHandler(() => ctx.get?.('toolboxDesktop'))
-  ctx.effect(
-    () => connection.rpc.handle(HUMAN_ENTRY_CHANNEL, (endpoint, payload, signal) => handler(endpoint, payload, signal)),
-    'dsh-toolbox human-entry RPC channel',
+  for (const endpoint of HUMAN_ENTRY_ENDPOINTS) ctx.effect(
+    () => connection.fetch.register(exactRoute(endpoint, handler)),
+    `dsh-toolbox human-entry ${endpoint}`,
   )
 }

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { installConnection } from '../../../vendor/harness-reference/@deepseek-ai/dsh-client-connection/lib/client.node.js'
 import { createHumanEntryHandler } from '../src/human-entry/host.js'
+import * as HumanEntry from '../src/human-entry/host.js'
+import { Context } from '@deepseek-ai/cordis'
+import { HostConnectionService } from '../../../vendor/harness-reference/@deepseek-ai/dsh-client-connection/lib/index.js'
 
 /**
  * Integration tests against the actual installed 0.2.2-rc.1 Node Client
@@ -12,6 +15,45 @@ import { createHumanEntryHandler } from '../src/human-entry/host.js'
  */
 
 const clientBundleUrl = new URL('../../dsh-toolbox-client/client.js', import.meta.url)
+
+test('actual Host Connection registers and releases the RPC route in a strict Cordis plugin fiber', async () => {
+  const ctx = new Context()
+  const routes = new Set()
+  try {
+    await ctx.plugin({
+      name: 'test-http-carrier',
+      apply(carrierCtx) {
+        carrierCtx.provide('webServer', {
+          register(route) {
+            routes.add(route)
+            return () => routes.delete(route)
+          },
+        })
+      },
+    })
+    await ctx.plugin({ name: 'test-host-connection', apply(connectionCtx) { new HostConnectionService(connectionCtx, [], {}) } })
+    ctx.provide('toolboxDesktop', { async showMain() { return { opened: true } } })
+    const shared = ctx.get('connection').createSharedFetchHandler('/api')
+    const fiber = await ctx.plugin(HumanEntry)
+    await fiber.await()
+    const client = await loadClientBundle()
+    const connection = installActualConnection((input, init) => shared.fetch(new Request(new URL(input, 'http://fixture/'), init), ctx.get('connection').browserPeer))
+    assert.deepEqual(await client.callHumanEntry(connection, 'showMain', {}, freshSignal()), { opened: true })
+    const owner = ctx.get('connection').browserPeer
+    const url = 'http://fixture/api/toolbox-human/showMain'
+    const post = (body, contentType = 'application/json') => new Request(url, { method: 'POST', headers: { 'content-type': contentType }, body })
+    assert.equal((await shared.fetch(post('{'), owner)).status, 400)
+    assert.equal((await shared.fetch(post('x'.repeat(4097)), owner)).status, 413)
+    assert.equal((await shared.fetch(post('{}', 'text/plain'), owner)).status, 415)
+    assert.equal((await shared.fetch(post(JSON.stringify({ type: 'client-request', rpcId: 'id', method: 'wrong', payload: {} })), owner)).status, 400)
+    assert.equal((await shared.fetch(post('{}'), { principal: { kind: 'non-owner-fixture' } })).status, 403)
+    const cancelled = new AbortController(); cancelled.abort()
+    await assert.rejects(shared.fetch(new Request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', signal: cancelled.signal }), owner), { name: 'AbortError' })
+    await fiber.dispose()
+    const after = await shared.fetch(new Request('http://fixture/api/toolbox-human/showMain', { method: 'POST' }), ctx.get('connection').browserPeer)
+    assert.equal(after.status, 404)
+  } finally { await ctx.fiber.dispose() }
+})
 
 async function loadClientBundle() {
   const source = await readFile(clientBundleUrl, 'utf8')
@@ -54,7 +96,7 @@ function jsonResponse(value) {
 function createFetch(handler, { rewriteRpcId } = {}) {
   return async (_input, init) => {
     const request = JSON.parse(init.body)
-    const result = await handler(request.method, request.payload, init.signal)
+    const result = await handler(request.method.replace(/^toolbox-human\//u, ''), request.payload, init.signal)
     return jsonResponse({
       type: 'server-response',
       rpcId: rewriteRpcId ?? request.rpcId,

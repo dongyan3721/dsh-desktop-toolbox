@@ -148,7 +148,7 @@ pub async fn serve(config: BridgeConfig) -> Result<(), String> {
     Ok(())
 }
 
-fn watch_parent(pid: u32) -> Result<watch::Receiver<bool>, String> {
+pub fn watch_parent(pid: u32) -> Result<watch::Receiver<bool>, String> {
     let handle = unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, pid) };
     if handle == 0 {
         return Err("parent process cannot be watched".to_string());
@@ -167,7 +167,7 @@ fn watch_parent(pid: u32) -> Result<watch::Receiver<bool>, String> {
     Ok(rx)
 }
 
-fn client_process_id(server: &NamedPipeServer) -> io::Result<u32> {
+pub fn client_process_id(server: &NamedPipeServer) -> io::Result<u32> {
     let mut pid = 0_u32;
     let ok = unsafe { GetNamedPipeClientProcessId(server.as_raw_handle() as HANDLE, &mut pid) };
     if ok == 0 {
@@ -177,7 +177,7 @@ fn client_process_id(server: &NamedPipeServer) -> io::Result<u32> {
     }
 }
 
-fn create_listening_pipe(name: &str) -> io::Result<NamedPipeServer> {
+pub fn create_listening_pipe(name: &str) -> io::Result<NamedPipeServer> {
     let acl = build_current_user_acl()?;
     let server = unsafe { create_pipe_with_acl(name, acl) };
     unsafe {

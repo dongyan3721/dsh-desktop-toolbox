@@ -1,14 +1,18 @@
 {
   "name": "dsh-toolbox",
-  "version": "0.1.0-alpha.2",
-  "description": "Native notes and image toolbox for DeepSeek Harness",
+  "version": "0.1.0-alpha.6",
+  "description": "Original human desktop toolbox for DeepSeek Harness",
   "type": "module",
   "os": ["win32"],
   "cpu": ["x64"],
   "main": "./lib/index.js",
-  "exports": { ".": "./lib/index.js" },
-  "files": ["lib", "resources", "cordis.patch.yml", "README.md"],
-  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "exports": {
+    ".": "./lib/index.js",
+    "./desktop": "./lib/desktop/index.js",
+    "./human-entry": "./lib/human-entry/host.js"
+  },
+  "files": ["lib", "resources", "cordis.patch.yml", "human.patch.yml", "README.md"],
+  "dsh": { "bundle": { "patch": "./human.patch.yml" } },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.1.0",
     "@deepseek-ai/dsh-tools": "0.2.2-rc.1",

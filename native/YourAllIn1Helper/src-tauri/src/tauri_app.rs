@@ -240,6 +240,9 @@ impl WindowBackend for TauriWindowBackend {
             }
         }
 
+        if let Some(dir) = crate::plugin_host::webview_data_dir(&self.app) {
+            builder = builder.data_directory(dir);
+        }
         let window = builder.build().map_err(to_core_error)?;
         if spec.label == "translate-popover" {
             if let Err(reason) = crate::translator_mouse::constrain_native_popover(&window) {
@@ -1042,7 +1045,7 @@ fn reconcile_pin_badges(app: &AppHandle, badges: Vec<ExternalWindowInfo>) {
             "index.html?mode=native&window=pin-badge&handle={}",
             info.handle
         );
-        let created = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+        let mut created = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
             .title(format!("📌 {}", info.process_name))
             .inner_size(28.0, 28.0)
             .min_inner_size(28.0, 28.0)
@@ -1055,8 +1058,11 @@ fn reconcile_pin_badges(app: &AppHandle, badges: Vec<ExternalWindowInfo>) {
             .focused(false)
             .focusable(false)
             .visible(false)
-            .resizable(false)
-            .build();
+            .resizable(false);
+        if let Some(dir) = crate::plugin_host::webview_data_dir(app) {
+            created = created.data_directory(dir);
+        }
+        let created = created.build();
         if let Ok(window) = created {
             let _ = window.set_position(position);
             #[cfg(target_os = "windows")]
@@ -1422,12 +1428,18 @@ mod ui_smoke;
 
 /// Starts the real cross-platform Tauri desktop application.
 pub fn run() {
-    let ui_smoke_test = std::env::args().any(|arg| arg == "--ui-smoke-test");
+    let plugin = crate::plugin_host::plugin_active();
+    let ui_smoke_test = !plugin && std::env::args().any(|arg| arg == "--ui-smoke-test");
     let keep_open = std::env::args().any(|arg| arg == "--keep-open");
     let builder = tauri::Builder::default();
     #[cfg(target_os = "windows")]
-    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(Arc::new(crate::updates::UpdateState::default()));
+    let builder = if plugin {
+        builder
+    } else {
+        builder
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .manage(Arc::new(crate::updates::UpdateState::default()))
+    };
     let app = builder
         .manage(Arc::new(ExitCoordinator::default()))
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -1441,8 +1453,13 @@ pub fn run() {
             crate::screenshot_binary::screenshot_gif_image
         ])
         .setup(move |app| {
+            if plugin {
+                crate::plugin_host::install_plugin_state(app.handle()).map_err(anyhow::Error::msg)?;
+            }
             // 人工 GUI 回归可使用独立的数据目录，避免改动日常使用记录。
-            let app_data_dir = if let Some(path) = gui_test::data_dir() {
+            let app_data_dir = if let Some(isolation) = crate::plugin_host::active_isolation() {
+                isolation.data_dir.clone()
+            } else if let Some(path) = gui_test::data_dir() {
                 path
             } else if ui_smoke_test {
                 std::env::temp_dir().join(format!("all-in-one-ui-smoke-{}", std::process::id()))
@@ -1531,17 +1548,35 @@ pub fn run() {
                 }));
             app.manage(host);
             #[cfg(target_os = "windows")]
-            crate::updates::start(app.handle());
+            if !plugin {
+                crate::updates::start(app.handle());
+            }
             sync_vault_native_observer(app.handle());
 
             // 个别按键被其他程序占用时继续启动，失败项已记录并在对应功能页显示。
             register_global_shortcuts(app.handle())?;
             setup_tray(app.handle())?;
-            start_clipboard_listener(app.handle());
-            #[cfg(target_os = "macos")]
-            crate::translator_mouse::start(app.handle());
-            #[cfg(target_os = "windows")]
-            crate::translator_mouse::start(app.handle());
+            let capture_enabled = !plugin
+                || app
+                    .state::<Arc<DesktopHost>>()
+                    .kernel()
+                    .registry()
+                    .is_enabled("clipboard");
+            if capture_enabled {
+                start_clipboard_listener(app.handle());
+            }
+            let translator_enabled = !plugin
+                || app
+                    .state::<Arc<DesktopHost>>()
+                    .kernel()
+                    .registry()
+                    .is_enabled("translator");
+            if translator_enabled {
+                #[cfg(target_os = "macos")]
+                crate::translator_mouse::start(app.handle());
+                #[cfg(target_os = "windows")]
+                crate::translator_mouse::start(app.handle());
+            }
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             if app
                 .state::<Arc<DesktopHost>>()
@@ -1552,7 +1587,10 @@ pub fn run() {
                 start_window_pin_guard_and_badges(app.handle());
             }
 
-            if !ui_smoke_test && !std::env::args().any(|arg| arg == "--silent") {
+            if plugin {
+                crate::plugin_host::spawn_control_server(app.handle()).map_err(anyhow::Error::msg)?;
+            }
+            if !plugin && !ui_smoke_test && !std::env::args().any(|arg| arg == "--silent") {
                 let host = app.state::<Arc<DesktopHost>>();
                 let initial_route = std::env::var("ALL_IN_ONE_DASHBOARD_ROUTE")
                     .unwrap_or_else(|_| "/overview".to_string());
@@ -1718,6 +1756,12 @@ pub fn run() {
                     tauri::async_runtime::spawn(async move {
                         // 先把便笺页面未落盘的 400 ms 防抖内容冲刷完，再开始拆内核。
                         // 任何失败都撤销退出，保留窗口与内容；此路径尚未停用其他模块。
+                        let flush_already_accepted = app
+                            .try_state::<crate::plugin_host::PluginShutdown>()
+                            .is_some_and(|shutdown| shutdown.accepted());
+                        let flush_error = if flush_already_accepted {
+                            None
+                        } else {
                         let flush_host = host.clone();
                         let flush = tauri::async_runtime::spawn_blocking(move || {
                             flush_host
@@ -1728,12 +1772,13 @@ pub fn run() {
                                 .transpose()
                         })
                         .await;
-                        let flush_error = match flush {
+                        match flush {
                             Ok(Ok(_)) => None,
                             Ok(Err(error)) => Some(error.to_string()),
                             Err(error) => {
                                 Some(format!("便笺保存工作线程意外失败：{}", error))
                             }
+                        }
                         };
                         if let Some(reason) = flush_error {
                             let app_for_main = app.clone();
@@ -1761,7 +1806,9 @@ pub fn run() {
                         }
                         exit.finish_shutdown();
                         #[cfg(target_os = "windows")]
-                        crate::updates::install_after_shutdown(&app);
+                        if !crate::plugin_host::plugin_active() {
+                            crate::updates::install_after_shutdown(&app);
+                        }
                         app.exit(code.unwrap_or(0));
                     });
                 }

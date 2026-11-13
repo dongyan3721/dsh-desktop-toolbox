@@ -35,7 +35,7 @@ function createDesktop(overrides = {}) {
 test('human-entry host adapter exposes its channel and required services', () => {
   assert.equal(name, 'dsh-toolbox-human-entry')
   assert.deepEqual(inject, ['connection'])
-  assert.equal(HUMAN_ENTRY_CHANNEL, '/toolbox-human')
+  assert.equal(HUMAN_ENTRY_CHANNEL, '/api')
 })
 
 test('status maps to toolboxDesktop.status(signal)', async () => {
@@ -248,16 +248,16 @@ test('results are JSON-safe and show/open results must confirm opened:true', asy
   assert.equal(notOpenedResult.error.code, 'INTERNAL')
 })
 
-test('apply registers the generic RPC channel and disposes it with the plugin', async () => {
+test('apply registers exact Connection routes and disposes them with the plugin', async () => {
   const desktop = createDesktop()
   const registrations = []
   const disposers = []
   const connection = {
-    rpc: {
-      handle(channel, handler) {
-        registrations.push({ channel, handler })
+    fetch: {
+      register(route) {
+        registrations.push(route)
         return () => {
-          registrations[0].disposed = true
+          route.disposed = true
         }
       },
     },
@@ -277,17 +277,17 @@ test('apply registers the generic RPC channel and disposes it with the plugin', 
 
   apply(ctx)
 
-  assert.equal(registrations.length, 1)
-  assert.equal(registrations[0].channel, '/toolbox-human')
-  assert.equal(typeof registrations[0].handler, 'function')
+  assert.equal(registrations.length, 3)
+  assert.equal(registrations[1].path, '/api/toolbox-human/showMain')
+  assert.equal(registrations[1].requestBody, 'streaming')
 
-  const result = await registrations[0].handler('showMain', {}, freshSignal())
-  assert.deepEqual(result, { ok: true, value: { opened: true, window: 'main' } })
+  const response = await registrations[1].fetch(new Request('http://fixture/api/toolbox-human/showMain', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId: 'fixture-id', method: 'toolbox-human/showMain', payload: {} }) }))
+  assert.deepEqual(await response.json(), { type: 'server-response', rpcId: 'fixture-id', result: { ok: true, value: { opened: true, window: 'main' } } })
   assert.equal(desktop.calls[0].method, 'showMain')
 
-  assert.equal(disposers.length, 1)
-  disposers[0]()
-  assert.equal(registrations[0].disposed, true)
+  assert.equal(disposers.length, 3)
+  for (const dispose of disposers) dispose()
+  assert.ok(registrations.every(route => route.disposed))
 })
 
 test('apply refuses to load without the Host connection service', () => {

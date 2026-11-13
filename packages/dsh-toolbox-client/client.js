@@ -8,7 +8,8 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
 
-    const HUMAN_ENTRY_CHANNEL = '/toolbox-human'
+    const HUMAN_ENTRY_CHANNEL = '/api'
+    const HUMAN_ENTRY_PREFIX = 'toolbox-human/'
     const PANEL_ID = 'toolbox'
     const PANEL_LABEL = '工具箱'
 
@@ -65,7 +66,7 @@ window.__ModuleLoader__.load({
         || typeof connection.rpc.call !== 'function') {
         throw codedError('DEPENDENCY_MISSING', 'Harness Connection 不可用')
       }
-      const result = await connection.rpc.call(HUMAN_ENTRY_CHANNEL, endpoint, payload, signal)
+      const result = await connection.rpc.call(HUMAN_ENTRY_CHANNEL, `${HUMAN_ENTRY_PREFIX}${endpoint}`, payload, signal)
       signal?.throwIfAborted?.()
       if (result === null || typeof result !== 'object' || Array.isArray(result)
         || typeof result.ok !== 'boolean') {
