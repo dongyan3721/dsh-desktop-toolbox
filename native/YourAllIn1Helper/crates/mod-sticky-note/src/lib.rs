@@ -63,6 +63,88 @@ pub struct StickyNoteWrite {
     pub note: StickyNoteRecord,
 }
 
+/// Headless create/update result. `Conflict` and `Missing` leave the stored row unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ClosedNoteSave {
+    Applied(StickyNoteRecord),
+    Conflict(StickyNoteRecord),
+    Missing,
+}
+
+/// JavaScript `Number.MAX_SAFE_INTEGER`. Conflict tokens stored for the bridge stay inside it.
+const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+
+fn next_conflict_token(previous: i64, now_ms: i64) -> CoreResult<i64> {
+    if !(0..=JS_MAX_SAFE_INTEGER).contains(&previous) {
+        return Err(CoreError::Internal(anyhow::anyhow!(
+            "note timestamp could not be advanced"
+        )));
+    }
+    if now_ms > previous && now_ms <= JS_MAX_SAFE_INTEGER {
+        return Ok(now_ms);
+    }
+    if previous >= JS_MAX_SAFE_INTEGER {
+        return Err(CoreError::Internal(anyhow::anyhow!(
+            "note timestamp could not be advanced"
+        )));
+    }
+    Ok(previous + 1)
+}
+
+fn closed_update<F>(
+    tx: &rusqlite::Transaction<'_>,
+    note_id: &str,
+    title: Option<&str>,
+    content_md: Option<&str>,
+    expected_updated_at: Option<i64>,
+    now_ms: i64,
+    before_commit: F,
+) -> CoreResult<ClosedNoteSave>
+where
+    F: FnOnce() -> CoreResult<()>,
+{
+    let current = tx
+        .query_row(
+            "SELECT id, title, content_md, theme_color, opacity,
+                    pos_x, pos_y, width, height, is_pinned, is_open, updated_at
+             FROM sticky_notes WHERE id = ?1",
+            params![note_id],
+            StickyNoteModule::map_row,
+        )
+        .optional()?;
+    let Some(current) = current else {
+        return Ok(ClosedNoteSave::Missing);
+    };
+    if expected_updated_at.is_some_and(|expected| expected != current.updated_at) {
+        return Ok(ClosedNoteSave::Conflict(current));
+    }
+    let next = next_conflict_token(current.updated_at, now_ms)?;
+    let stored_title = title.unwrap_or(current.title.as_str()).to_string();
+    let stored_content = content_md.unwrap_or(current.content_md.as_str()).to_string();
+    let affected = tx.execute(
+        "UPDATE sticky_notes
+         SET title = ?1, content_md = ?2, updated_at = ?3
+         WHERE id = ?4 AND updated_at = ?5",
+        params![
+            stored_title,
+            stored_content,
+            next,
+            note_id,
+            current.updated_at
+        ],
+    )?;
+    if affected != 1 {
+        return Ok(ClosedNoteSave::Conflict(current));
+    }
+    before_commit()?;
+    Ok(ClosedNoteSave::Applied(StickyNoteRecord {
+        title: stored_title,
+        content_md: stored_content,
+        updated_at: next,
+        ..current
+    }))
+}
+
 impl std::ops::Deref for StickyNoteWrite {
     type Target = StickyNoteRecord;
 
@@ -467,6 +549,144 @@ impl StickyNoteModule {
 
         self.spawn_note_window(ctx, &record)?;
         Ok(record)
+    }
+
+    /// Insert one closed note in a single transaction and do not open a window.
+    ///
+    /// `before_commit` runs after the INSERT and before COMMIT. An error rolls the
+    /// insert back, so a crash or injected failure cannot leave `is_open = 1`.
+    pub fn create_closed_note(
+        &self,
+        ctx: &ModuleContext,
+        title: Option<&str>,
+        initial_markdown: Option<&str>,
+    ) -> CoreResult<StickyNoteRecord> {
+        self.create_closed_note_checking(ctx, title, initial_markdown, || Ok(()))
+    }
+
+    pub fn create_closed_note_checking<F>(
+        &self,
+        ctx: &ModuleContext,
+        title: Option<&str>,
+        initial_markdown: Option<&str>,
+        before_commit: F,
+    ) -> CoreResult<StickyNoteRecord>
+    where
+        F: FnOnce() -> CoreResult<()>,
+    {
+        let now = Utc::now().timestamp_millis();
+        if !(0..=JS_MAX_SAFE_INTEGER).contains(&now) {
+            return Err(CoreError::Internal(anyhow::anyhow!(
+                "note timestamp is not a safe integer"
+            )));
+        }
+        let record = StickyNoteRecord {
+            id: Uuid::new_v4().to_string(),
+            title: title.unwrap_or("便笺").to_string(),
+            content_md: initial_markdown.unwrap_or("").to_string(),
+            theme_color: "amber".to_string(),
+            opacity: 0.95,
+            pos_x: Some(240),
+            pos_y: Some(180),
+            width: 320,
+            height: 300,
+            is_pinned: true,
+            is_open: false,
+            updated_at: now,
+        };
+        ctx.db.with_conn(|conn| {
+            let tx = conn.transaction()?;
+            tx.execute(
+                "INSERT INTO sticky_notes (
+                    id, title, content_md, theme_color, opacity,
+                    pos_x, pos_y, width, height, is_pinned, is_open, updated_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, 0, ?10)",
+                params![
+                    record.id,
+                    record.title,
+                    record.content_md,
+                    record.theme_color,
+                    record.opacity,
+                    record.pos_x,
+                    record.pos_y,
+                    record.width,
+                    record.height,
+                    record.updated_at,
+                ],
+            )?;
+            before_commit()?;
+            tx.commit()?;
+            Ok(())
+        })?;
+        Ok(record)
+    }
+
+    /// Update title and/or body and the conflict token in one SQLite commit.
+    ///
+    /// The token is the wall clock when that clock is strictly newer, otherwise the
+    /// previous token plus one. A stale `expected_updated_at` does not change the row.
+    /// This path does not open a window and does not use the desktop write-session cursor.
+    pub fn save_closed_content(
+        &self,
+        ctx: &ModuleContext,
+        note_id: &str,
+        title: Option<&str>,
+        content_md: Option<&str>,
+        expected_updated_at: Option<i64>,
+    ) -> CoreResult<ClosedNoteSave> {
+        self.save_closed_content_checking(
+            ctx,
+            note_id,
+            title,
+            content_md,
+            expected_updated_at,
+            Utc::now().timestamp_millis(),
+            || Ok(()),
+        )
+    }
+
+    /// `now_ms` replaces the wall clock. `before_commit` runs after the UPDATE and
+    /// before COMMIT; an error rolls the content and token back together.
+    pub fn save_closed_content_checking<F>(
+        &self,
+        ctx: &ModuleContext,
+        note_id: &str,
+        title: Option<&str>,
+        content_md: Option<&str>,
+        expected_updated_at: Option<i64>,
+        now_ms: i64,
+        before_commit: F,
+    ) -> CoreResult<ClosedNoteSave>
+    where
+        F: FnOnce() -> CoreResult<()>,
+    {
+        if title.is_none() && content_md.is_none() {
+            return Err(CoreError::Config(
+                "title or content_md is required".to_string(),
+            ));
+        }
+        ctx.db.with_conn(|conn| {
+            let tx = conn.transaction()?;
+            let outcome = closed_update(
+                &tx,
+                note_id,
+                title,
+                content_md,
+                expected_updated_at,
+                now_ms,
+                before_commit,
+            );
+            match outcome {
+                Ok(ClosedNoteSave::Applied(record)) => {
+                    tx.commit()?;
+                    Ok(ClosedNoteSave::Applied(record))
+                }
+                other => {
+                    drop(tx);
+                    other
+                }
+            }
+        })
     }
 
     /// 获取单条便笺完整记录

@@ -132,3 +132,214 @@ fn trim_and_volume_validation_rejects_invalid_ranges() {
     volume.volume = Some(-1.0);
     assert!(volume.validate().is_err());
 }
+
+fn worktree_fixture(name: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .ancestors()
+        .find(|dir| dir.join("AGENTS.md").is_file() && dir.join("native").is_dir())
+        .expect("CARGO_MANIFEST_DIR is not inside the toolbox project")
+        .to_path_buf();
+    let tmp = project.join(".tmp");
+    let root = tmp.join("mod-media-proc-tests").join(format!(
+        "{name}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let root_key = fixture_key(&root);
+    let tmp_key = fixture_key(&tmp);
+    assert!(
+        !tmp_key.is_empty() && root_key.starts_with(&(tmp_key + "\\")),
+        "refusing to delete {} because it is outside {}",
+        root.display(),
+        tmp.display()
+    );
+    if root.exists() {
+        fs::remove_dir_all(&root).unwrap();
+    }
+    fs::create_dir_all(&root).unwrap();
+    root
+}
+
+fn fixture_key(path: &Path) -> String {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => normalized.push(other),
+        }
+    }
+    normalized
+        .to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+fn staging_names(dir: &Path) -> Vec<String> {
+    fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+            name.starts_with(".dsh-").then_some(name)
+        })
+        .collect()
+}
+
+#[test]
+fn exact_publication_is_committed_even_if_staging_cleanup_reports_an_error() {
+    let dir = worktree_fixture("published-cleanup-error");
+    let input = dir.join("source.png");
+    let output = dir.join("output.png");
+    sample_png(&input);
+    let status = convert_image_exact_with(
+        &ExactImageRequest {
+            input_path: input,
+            output_path: output.clone(),
+            format: ImageOutputFormat::Png,
+        },
+        &std::sync::atomic::AtomicBool::new(false),
+        &|| {},
+        &|| {
+            assert!(output.is_file());
+            let staging = staging_names(&dir);
+            assert_eq!(staging.len(), 1);
+            // Inject NotFound in the post-publication unlink, after the real
+            // hard-link commit. The output must still have canonical success.
+            fs::remove_file(dir.join(&staging[0])).unwrap();
+        },
+    )
+    .unwrap();
+    assert_eq!(status, ExactImageStatus::Completed);
+    let decoded = ::image::open(&output).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (12, 8));
+    assert!(staging_names(&dir).is_empty());
+}
+
+#[test]
+fn exact_conversion_uses_real_codecs_and_settles_cancellation() {
+    let dir = worktree_fixture("exact");
+    let input = dir.join("source.png");
+    sample_png(&input);
+    let cases = [
+        (ImageOutputFormat::Png, "out.png", &b"\x89PNG"[..]),
+        (ImageOutputFormat::Jpeg, "out.jpg", &b"\xFF\xD8\xFF"[..]),
+        (ImageOutputFormat::Webp, "out.webp", &b"RIFF"[..]),
+        (ImageOutputFormat::Bmp, "out.bmp", &b"BM"[..]),
+        (ImageOutputFormat::Ico, "out.ico", &b"\x00\x00\x01\x00"[..]),
+    ];
+    for (format, name, magic) in cases {
+        let output = dir.join(name);
+        let status = convert_image_exact(
+            &ExactImageRequest {
+                input_path: input.clone(),
+                output_path: output.clone(),
+                format,
+            },
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(status, ExactImageStatus::Completed);
+        let bytes = fs::read(&output).unwrap();
+        assert!(bytes.starts_with(magic), "{name} did not start with its magic bytes");
+        if format == ImageOutputFormat::Webp {
+            assert_eq!(&bytes[8..12], b"WEBP");
+        }
+        let decoded = ::image::open(&output).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (12, 8));
+        assert!(staging_names(&dir).is_empty());
+    }
+
+    let bad = dir.join("bad.png");
+    fs::write(&bad, b"this is not an image").unwrap();
+    let bad_out = dir.join("bad-out.png");
+    let error = convert_image_exact(
+        &ExactImageRequest {
+            input_path: bad,
+            output_path: bad_out.clone(),
+            format: ImageOutputFormat::Png,
+        },
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("could not be decoded"));
+    assert!(!bad_out.exists());
+    assert!(staging_names(&dir).is_empty());
+
+    let existing = dir.join("existing.png");
+    fs::write(&existing, b"keep-these-bytes").unwrap();
+    let error = convert_image_exact(
+        &ExactImageRequest {
+            input_path: input.clone(),
+            output_path: existing.clone(),
+            format: ImageOutputFormat::Png,
+        },
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("already exists"));
+    assert_eq!(fs::read(&existing).unwrap(), b"keep-these-bytes");
+
+    let early = dir.join("early.png");
+    let early_flag = std::sync::atomic::AtomicBool::new(true);
+    assert_eq!(
+        convert_image_exact(
+            &ExactImageRequest {
+                input_path: input.clone(),
+                output_path: early.clone(),
+                format: ImageOutputFormat::Png,
+            },
+            &early_flag,
+        )
+        .unwrap(),
+        ExactImageStatus::Cancelled
+    );
+    assert!(!early.exists());
+    assert!(staging_names(&dir).is_empty());
+
+    let during = dir.join("during.png");
+    let during_flag = std::sync::atomic::AtomicBool::new(false);
+    let saw_staging = std::sync::atomic::AtomicBool::new(false);
+    let status = convert_image_exact_with(
+        &ExactImageRequest {
+            input_path: input.clone(),
+            output_path: during.clone(),
+            format: ImageOutputFormat::Png,
+        },
+        &during_flag,
+        &|| {
+            assert!(!during.exists());
+            assert!(!staging_names(&dir).is_empty());
+            saw_staging.store(true, std::sync::atomic::Ordering::Relaxed);
+            during_flag.store(true, std::sync::atomic::Ordering::Release);
+        },
+        &|| panic!("publish ran after cancellation"),
+    )
+    .unwrap();
+    assert_eq!(status, ExactImageStatus::Cancelled);
+    assert!(saw_staging.load(std::sync::atomic::Ordering::Relaxed));
+    assert!(!during.exists());
+    assert!(staging_names(&dir).is_empty());
+
+    let published = dir.join("published.png");
+    let published_flag = std::sync::atomic::AtomicBool::new(false);
+    let status = convert_image_exact_with(
+        &ExactImageRequest {
+            input_path: input,
+            output_path: published.clone(),
+            format: ImageOutputFormat::Png,
+        },
+        &published_flag,
+        &|| {},
+        &|| published_flag.store(true, std::sync::atomic::Ordering::Release),
+    )
+    .unwrap();
+    assert_eq!(status, ExactImageStatus::Completed);
+    assert!(published_flag.load(std::sync::atomic::Ordering::Relaxed));
+    assert_eq!(::image::open(&published).unwrap().width(), 12);
+    assert!(staging_names(&dir).is_empty());
+}
