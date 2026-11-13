@@ -45,9 +45,8 @@ async function loadSticky(options = {}) {
       },
     },
     setTimeout(fn, delay) {
-      assert.equal(delay, 400, 'content debounce stays 400 ms');
       const id = ++nextTimer;
-      timers.set(id, fn);
+      timers.set(id, { fn, delay });
       return id;
     },
     clearTimeout(id) { timers.delete(id); },
@@ -65,6 +64,10 @@ async function loadSticky(options = {}) {
         ok: payload.ok,
         error: payload.error,
         requestId: payload.request_id,
+        kind: payload.kind,
+        operation: payload.operation,
+        result: payload.result,
+        args: { ...payload },
       });
       if (name === 'sticky_close_note') {
         destroyed = true;
@@ -73,6 +76,12 @@ async function loadSticky(options = {}) {
       if (fail.has(name)) throw new Error(`forced failure ${name}`);
       if (defer.has(name)) {
         return new Promise((resolve, reject) => pending.push({ name, payload, resolve, reject }));
+      }
+      if (name === 'toolbox_agent_ui_ready') {
+        return { session_id: options.agentSessionId ?? 'agent-session-1' };
+      }
+      if (name === 'toolbox_agent_ui_result') {
+        return { acknowledged: true };
       }
       if (name === 'sticky_pick_save_path') return { path: options.savePath ?? null };
       if (name === 'sticky_begin_session') {
@@ -138,11 +147,28 @@ async function loadSticky(options = {}) {
     togglePin: () => run('togglePin()'),
     setOpacityPercent: (percent) => run(`onOpacityChange({ target: { value: ${JSON.stringify(String(percent))} } })`),
     async flushTimer() {
-      const next = timers.entries().next().value;
+      const next = [...timers.entries()].find(([, entry]) => entry.delay === 400);
       assert.ok(next, 'expected a pending debounce timer');
-      const [id, callback] = next;
+      const [id, entry] = next;
       timers.delete(id);
-      await callback();
+      await entry.fn();
+    },
+    /** 触发指定延时的看门狗定时器（Agent 握手有界恢复用） */
+    fireTimer(delay) {
+      const next = [...timers.entries()].find(([, entry]) => entry.delay === delay);
+      assert.ok(next, `expected a pending ${delay}ms timer`);
+      const [id, entry] = next;
+      timers.delete(id);
+      entry.fn();
+    },
+    /** 向 sticky://agent-command 监听器投递原生命令，并等待处理完成 */
+    dispatchAgent(payload) {
+      const listener = listeners.find((item) => item.name === 'sticky://agent-command');
+      assert.ok(listener, 'sticky://agent-command listener is registered');
+      return listener.callback({ payload });
+    },
+    agentResultCalls() {
+      return calls.filter((call) => call.name === 'toolbox_agent_ui_result');
     },
     resolveHead(value) {
       const item = pending.shift();
@@ -494,7 +520,7 @@ test('native or library flush-close saves pending edits before destroying the no
   await sticky.until(() => sticky.destroyed);
   assert.deepEqual(
     sticky.calls
-      .filter((call) => call.name !== 'sticky_get_note' && call.name !== 'sticky_begin_session')
+      .filter((call) => call.name !== 'sticky_get_note' && call.name !== 'sticky_begin_session' && call.name !== 'toolbox_agent_ui_ready' && call.name !== 'toolbox_agent_ui_result')
       .map((call) => call.name),
     ['sticky_save_content', 'sticky_close_note'],
   );
@@ -513,7 +539,7 @@ test('shutdown flush saves pending edits and acknowledges without closing the no
   await sticky.until(() => sticky.calls.some((call) => call.name === 'sticky_flush_result'));
   assert.deepEqual(
     sticky.calls
-      .filter((call) => call.name !== 'sticky_get_note' && call.name !== 'sticky_begin_session')
+      .filter((call) => call.name !== 'sticky_get_note' && call.name !== 'sticky_begin_session' && call.name !== 'toolbox_agent_ui_ready' && call.name !== 'toolbox_agent_ui_result')
       .map((call) => call.name),
     ['sticky_save_content', 'sticky_flush_result'],
   );
@@ -760,4 +786,139 @@ test('Markdown export saves only after confirmation and a failed flush never ope
   await failed.run('exportMarkdownFile()');
   assert.equal(failed.calls.some(c => c.name === 'sticky_pick_save_path'), false);
   assert.equal(failed.calls.some(c => c.name === 'sticky_save_markdown'), false);
+});
+
+/* ==================== A3 Agent UI 握手：prepare / apply / release ==================== */
+
+test('mount registers the agent session and the agent-command listener with exact ready arguments', async () => {
+  const sticky = await loadSticky({ noteId: 'qa-note' });
+  await sticky.hooks.mounted[0]();
+  const ready = sticky.calls.find((call) => call.name === 'toolbox_agent_ui_ready');
+  assert.ok(ready, 'toolbox_agent_ui_ready is invoked');
+  assert.deepEqual(Object.keys(ready.args).sort(), ['kind', 'note_id'], 'ready args are exact');
+  assert.equal(ready.args.kind, 'notes');
+  assert.equal(ready.args.note_id, 'qa-note');
+  const listener = sticky.listeners.find((item) => item.name === 'sticky://agent-command');
+  assert.ok(listener, 'sticky://agent-command listener is registered');
+});
+
+test('prepare flushes the dirty draft without closing, freezes, and acknowledges once', async () => {
+  const sticky = await loadSticky({ noteId: 'qa-note' });
+  await sticky.hooks.mounted[0]();
+  sticky.run('note.value.content_md = "用户草稿"');
+  sticky.scheduleSave();
+  assert.equal(sticky.pendingTimers, 1);
+  await sticky.dispatchAgent({ request_id: 'r1', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'prepare' });
+  const save = sticky.calls.find((call) => call.name === 'sticky_save_content');
+  assert.ok(save, 'dirty draft is flushed during prepare');
+  assert.equal(save.content, '用户草稿');
+  assert.equal(sticky.pendingTimers, 1, 'only the handshake watchdog remains');
+  assert.equal(sticky.destroyed, false, 'prepare never closes the window');
+  assert.equal(sticky.run('frozen.value'), true);
+  const results = sticky.agentResultCalls();
+  assert.equal(results.length, 1, 'exactly one completion');
+  assert.equal(results[0].ok, true);
+  assert.equal(results[0].operation, 'prepare');
+  assert.equal(results[0].kind, 'notes');
+  assert.deepEqual({ ...results[0].result }, {}, 'prepare acknowledges with an empty result');
+  assert.deepEqual(Object.keys(results[0].args).sort(), ['kind', 'ok', 'operation', 'request_id', 'result', 'session_id']);
+});
+
+test('apply adopts the new write session and syncs the committed record into the open editor', async () => {
+  const sticky = await loadSticky({ noteId: 'qa-note' });
+  await sticky.hooks.mounted[0]();
+  await sticky.dispatchAgent({ request_id: 'r1', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'prepare' });
+  await sticky.dispatchAgent({
+    request_id: 'r2', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'apply',
+    write_session_id: 77,
+    record: { id: 'qa-note', title: 'agent title', content_md: 'agent body', updated_at: 999, is_open: true },
+  });
+  assert.equal(sticky.run('note.value.title'), 'agent title');
+  assert.equal(sticky.run('note.value.content_md'), 'agent body');
+  assert.equal(sticky.run('note.value.updated_at'), 999);
+  const applyResult = sticky.agentResultCalls().find((call) => call.operation === 'apply');
+  assert.equal(applyResult.ok, true);
+  await sticky.dispatchAgent({ request_id: 'r3', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'release' });
+  assert.equal(sticky.run('frozen.value'), false);
+  // 旧 autosave 会话失效：此后的人用保存携带 apply 下发的新 write_session_id
+  sticky.scheduleSave();
+  await sticky.flushTimer();
+  await sticky.until(() => sticky.calls.some((call) => call.name === 'sticky_save_content'));
+  const save = sticky.calls.find((call) => call.name === 'sticky_save_content');
+  assert.equal(save.sessionId, 77);
+});
+
+test('release unfreezes without replaying records; late and duplicate replies never commit', async () => {
+  const sticky = await loadSticky({ noteId: 'qa-note' });
+  await sticky.hooks.mounted[0]();
+  await sticky.dispatchAgent({ request_id: 'r1', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'prepare' });
+  await sticky.dispatchAgent({ request_id: 'r2', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'release' });
+  assert.equal(sticky.run('frozen.value'), false);
+  await sticky.dispatchAgent({
+    request_id: 'r3', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'apply',
+    write_session_id: 88,
+    record: { id: 'qa-note', title: 'stale', content_md: 'stale body', updated_at: 1234, is_open: true },
+  });
+  assert.equal(sticky.run('note.value.content_md'), '服务器正文', 'late apply must not overwrite the editor');
+  const applyResult = sticky.agentResultCalls().find((call) => call.operation === 'apply');
+  assert.equal(applyResult.ok, false);
+  const before = sticky.agentResultCalls().length;
+  await sticky.dispatchAgent({ request_id: 'r2', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'release' });
+  assert.equal(sticky.agentResultCalls().length, before, 'duplicate request ids complete only once');
+});
+
+test('conflict keeps the user draft: release without apply never overwrites content', async () => {
+  const sticky = await loadSticky({ noteId: 'qa-note' });
+  await sticky.hooks.mounted[0]();
+  sticky.run('note.value.content_md = "保留的草稿"');
+  await sticky.dispatchAgent({ request_id: 'r1', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'prepare' });
+  await sticky.dispatchAgent({ request_id: 'r2', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'release' });
+  assert.equal(sticky.run('note.value.content_md'), '保留的草稿');
+  assert.equal(sticky.run('frozen.value'), false);
+});
+
+test('a handshake without follow-up is bounded by the watchdog and a late apply cannot overwrite the draft', async () => {
+  const sticky = await loadSticky({ noteId: 'qa-note' });
+  await sticky.hooks.mounted[0]();
+  sticky.run('note.value.content_md = "watchdog draft"');
+  await sticky.dispatchAgent({ request_id: 'r1', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'prepare' });
+  assert.equal(sticky.run('frozen.value'), true);
+  sticky.fireTimer(2500);
+  assert.equal(sticky.run('frozen.value'), false, 'bounded recovery unfreezes after the watchdog');
+  await sticky.dispatchAgent({
+    request_id: 'r2', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'apply',
+    write_session_id: 99,
+    record: { id: 'qa-note', title: 'late', content_md: 'late body', updated_at: 5, is_open: true },
+  });
+  assert.equal(sticky.run('note.value.content_md'), 'watchdog draft');
+  const applyResult = sticky.agentResultCalls().find((call) => call.operation === 'apply');
+  assert.equal(applyResult.ok, false);
+});
+
+test('wrong-session commands are ignored and a closing editor reports BUSY without freezing', async () => {
+  const sticky = await loadSticky({ noteId: 'qa-note' });
+  await sticky.hooks.mounted[0]();
+  await sticky.dispatchAgent({ request_id: 'rx', session_id: 'foreign-session', note_id: 'qa-note', operation: 'prepare' });
+  assert.equal(sticky.agentResultCalls().length, 0, 'foreign sessions are not claimed');
+  assert.equal(sticky.run('frozen.value'), false);
+  sticky.run('closing = true');
+  await sticky.dispatchAgent({ request_id: 'ry', session_id: 'agent-session-1', note_id: 'qa-note', operation: 'prepare' });
+  const busy = sticky.agentResultCalls()[0];
+  assert.equal(busy.ok, false);
+  assert.equal(busy.error, 'BUSY');
+  assert.equal(sticky.run('frozen.value'), false);
+});
+
+test('a rejected autosave on a retired session re-handshakes a new session without losing the draft', async () => {
+  const sticky = await loadSticky({ noteId: 'qa-note', sessionId: 5, defer: new Set(['sticky_save_content']) });
+  await sticky.hooks.mounted[0]();
+  await sticky.until(() => sticky.calls.some((call) => call.name === 'sticky_begin_session'));
+  sticky.run('note.value.content_md = "session draft"');
+  sticky.scheduleSave();
+  await sticky.flushTimer();
+  await sticky.until(() => sticky.calls.some((call) => call.name === 'sticky_save_content'));
+  sticky.resolveHead({ applied: false, title: '服务器标题', content_md: '服务器正文' });
+  await sticky.until(() => sticky.calls.filter((call) => call.name === 'sticky_begin_session').length === 2);
+  assert.equal(sticky.run('note.value.content_md'), 'session draft', 'the draft is preserved');
+  assert.equal(sticky.run('saveError.value'), true);
 });

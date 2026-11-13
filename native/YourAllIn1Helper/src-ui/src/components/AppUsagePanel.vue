@@ -559,6 +559,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.app-usage { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 .usage-error {
   margin: 0 0 10px;
   padding: 8px 12px;

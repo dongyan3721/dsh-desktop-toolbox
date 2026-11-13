@@ -301,6 +301,25 @@ test('screen ink strokes are bounded and structurally closed', async () => {
   registry.dispose()
 })
 
+test('a committed clipboard write survives late cancellation without retry', async () => {
+  const controller = new AbortController()
+  const { tools, desktop, registry } = await setup(() => {
+    controller.abort()
+    return { id: 1, type: 'text', text: '已写入' }
+  })
+  const tool = tools.definitions.get('toolbox_clipboard')
+
+  const value = await tool.execute(
+    { action: 'write_text', text: '已写入' },
+    { signal: controller.signal },
+  )
+
+  assert.deepEqual(value, { id: 1, type: 'text', text: '已写入' })
+  assert.equal(desktop.calls.length, 1)
+  assert.equal(controller.signal.aborted, true)
+  registry.dispose()
+})
+
 test('canonical JSON results preserve module data without transformation', async () => {
   const payload = {
     revision: 7,

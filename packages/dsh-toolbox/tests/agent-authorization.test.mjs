@@ -20,6 +20,11 @@ const ALL_METHODS = [
   'agent.usage.overview',
   'agent.usage.apps',
   'agent.usage.hourly',
+  'agent.notes.search',
+  'agent.notes.read',
+  'agent.notes.create',
+  'agent.notes.update',
+  'agent.notes.open',
 ]
 
 function createTools() {
@@ -102,6 +107,7 @@ async function settle() {
 test('default no authorization and malformed snapshots register no tools', async () => {
   for (const initial of [
     snapshot({ modules: [access('screenshot', { agent_allowed: false, agent_effective: false })] }),
+    snapshot({ modules: [access('sticky_note', { agent_allowed: false, agent_effective: false })] }),
     snapshot({ modules: [access('screenshot', { agent_supported: false })] }),
     snapshot({ modules: [access('media_proc')] }),
     snapshot({ modules: [access('screenshot')], methods: [] }),
@@ -123,6 +129,7 @@ test('only advertised methods for effective supported modules are registered', a
       access('clipboard'),
       access('screen_ink'),
       access('app_usage'),
+      access('sticky_note'),
     ],
     methods: [
       'agent.screenshot.monitors',
@@ -131,6 +138,11 @@ test('only advertised methods for effective supported modules are registered', a
       'agent.ink.draw',
       'agent.usage.status',
       'agent.usage.hourly',
+      'agent.notes.search',
+      'agent.notes.read',
+      'agent.notes.create',
+      'agent.notes.update',
+      'agent.notes.open',
       'agent.media.convert_image',
     ],
   })
@@ -139,6 +151,7 @@ test('only advertised methods for effective supported modules are registered', a
 
   assert.deepEqual(tools.names(), [
     'toolbox_clipboard',
+    'toolbox_notes',
     'toolbox_screen_ink',
     'toolbox_screenshot',
     'toolbox_usage',
@@ -147,6 +160,9 @@ test('only advertised methods for effective supported modules are registered', a
   assert.deepEqual(tools.definitions.get('toolbox_clipboard').parameters.properties.action.enum, ['list'])
   assert.deepEqual(tools.definitions.get('toolbox_screen_ink').parameters.properties.action.enum, ['status', 'draw'])
   assert.deepEqual(tools.definitions.get('toolbox_usage').parameters.properties.action.enum, ['status', 'hourly'])
+  assert.deepEqual(tools.definitions.get('toolbox_notes').parameters.properties.action.enum, [
+    'search', 'read', 'create', 'update', 'open',
+  ])
   registry.dispose()
 })
 
@@ -190,19 +206,19 @@ test('unsupported modules are never exposed even with forged effective access', 
   const tools = createTools()
   const initial = snapshot({
     modules: [
-      access('sticky_note'),
       access('media_proc'),
       access('translator'),
       access('window_pin'),
       access('script_runner'),
       access('password_vault'),
       access('screenshot'),
+      access('sticky_note'),
     ],
     methods: ALL_METHODS,
   })
   const registry = createAgentToolRegistry({ tools, desktop: createDesktop(initial) })
   await registry.start(freshSignal())
-  assert.deepEqual(tools.names(), ['toolbox_screenshot'])
+  assert.deepEqual(tools.names(), ['toolbox_notes', 'toolbox_screenshot'])
   registry.dispose()
 })
 
@@ -248,6 +264,49 @@ test('an old tool reference rechecks live grant and never calls the service afte
     error => error.code === 'UNSUPPORTED',
   )
   assert.equal(desktop.calls.length, 0)
+})
+
+test('all five modules revoke independently and re-register on a fresh grant', async () => {
+  const cases = [
+    ['screenshot', 'toolbox_screenshot', 'agent.screenshot.monitors', { action: 'monitors' }],
+    ['clipboard', 'toolbox_clipboard', 'agent.clipboard.list', { action: 'list' }],
+    ['screen_ink', 'toolbox_screen_ink', 'agent.ink.status', { action: 'status' }],
+    ['app_usage', 'toolbox_usage', 'agent.usage.status', { action: 'status' }],
+    ['sticky_note', 'toolbox_notes', 'agent.notes.search', { action: 'search' }],
+  ]
+
+  for (const [moduleId, toolName, method, args] of cases) {
+    const tools = createTools()
+    const desktop = createDesktop(snapshot({
+      modules: [access(moduleId)],
+      methods: [method],
+    }))
+    const registry = createAgentToolRegistry({ tools, desktop })
+    await registry.start(freshSignal())
+
+    assert.deepEqual(tools.names(), [toolName], `${moduleId} should register its own tool`)
+    const oldTool = tools.definitions.get(toolName)
+    assert.ok(oldTool)
+
+    desktop.emit(snapshot({
+      modules: [access(moduleId, { agent_allowed: false, agent_effective: false })],
+      methods: [method],
+    }))
+    assert.equal(tools.definitions.has(toolName), false, `${moduleId} tool must be withdrawn`)
+    await assert.rejects(
+      oldTool.execute(args, { signal: freshSignal() }),
+      error => error.code === 'AGENT_ACCESS_DENIED',
+      `${moduleId} old tool reference must be denied`,
+    )
+    assert.equal(desktop.calls.length, 0)
+
+    desktop.emit(snapshot({
+      modules: [access(moduleId)],
+      methods: [method],
+    }))
+    assert.equal(tools.definitions.has(toolName), true, `${moduleId} must re-register on fresh grant`)
+    registry.dispose()
+  }
 })
 
 test('disconnect and unavailable errors withdraw tools and are not retried', async () => {
@@ -358,7 +417,7 @@ test('apply waits for toolboxDesktop, registers tools, and disposes with the inj
       return undefined
     },
     inject(services, callback) {
-      injected = services
+      if (services.length === 1 && services[0] === 'toolboxDesktop') injected = services
       callback({ ...ctx, toolboxDesktop: desktop })
       return () => {}
     },

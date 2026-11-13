@@ -14,35 +14,42 @@ import { createAgentImagePublisher } from './image.js'
 export const name = 'dsh-toolbox-agent-tools'
 export const inject = ['tools']
 
-function resolveImagePublisher(ctx) {
-  const get = typeof ctx.get === 'function' ? name => ctx.get(name) : name => ctx[name]
-  const provided = get('toolboxAgentImages')
-  if (provided !== undefined) return provided
-  const attachments = get('attachments')
-  const artifacts = get('toolboxArtifacts')
-  if (attachments === undefined || artifacts === undefined) return undefined
-  try {
-    return createAgentImagePublisher({ attachments, artifactReader: artifacts })
-  } catch {
-    return undefined
-  }
-}
-
 /**
  * Create the dynamic registry for the injected toolboxDesktop service.
  * @param {object} ctx - scoped Cordis context containing tools/toolboxDesktop.
+ * @param {object} [imagePublisher] - explicit publisher override for focused tests.
  * @returns {import('./registry.js').AgentToolRegistry}
  */
-export function createAgentToolsForContext(ctx) {
-  const desktop = ctx.toolboxDesktop ?? ctx.get?.('toolboxDesktop')
-  const tools = ctx.tools ?? ctx.get?.('tools')
-  return createAgentToolRegistry({
-    tools,
-    desktop,
-    // Image actions register only when the durable attachment store and the
-    // Codex-owned artifact reader are both present. JSON actions do not depend
-    // on either service.
-    imagePublisher: resolveImagePublisher(ctx),
+export function createAgentToolsForContext(ctx, imagePublisher) {
+  const get = typeof ctx.get === 'function' ? name => ctx.get(name) : name => ctx[name]
+  const desktop = ctx.toolboxDesktop ?? get('toolboxDesktop')
+  const tools = ctx.tools ?? get('tools')
+  const provided = imagePublisher ?? get('toolboxAgentImages')
+  return createAgentToolRegistry({ tools, desktop, imagePublisher: provided })
+}
+
+/**
+ * Image actions depend on two services that may arrive after the Agent entry.
+ * A Cordis injection scope activates them when both appear and withdraws them
+ * when either is removed, without restarting the desktop runtime.
+ */
+function applyImageServices(desktopCtx, registry) {
+  desktopCtx.inject(['attachments', 'toolboxArtifacts'], imageCtx => {
+    const get = typeof imageCtx.get === 'function' ? name => imageCtx.get(name) : name => imageCtx[name]
+    let publisher
+    try {
+      publisher = createAgentImagePublisher({
+        attachments: get('attachments'),
+        artifactReader: get('toolboxArtifacts'),
+      })
+    } catch {
+      return
+    }
+    registry.setImagePublisher(publisher)
+    imageCtx.effect(
+      () => () => registry.setImagePublisher(undefined),
+      'dsh-toolbox agent image services',
+    )
   })
 }
 
@@ -56,6 +63,7 @@ export function apply(ctx) {
   ctx.inject(['toolboxDesktop'], (desktopCtx) => {
     const registry = createAgentToolsForContext(desktopCtx)
     desktopCtx.effect(() => () => registry.dispose(), 'dsh-toolbox agent tools')
+    applyImageServices(desktopCtx, registry)
     void registry.start().catch(() => registry.dispose())
   })
 }

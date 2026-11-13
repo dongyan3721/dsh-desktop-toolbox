@@ -90,8 +90,16 @@ onMounted(async () => {
         notifyToolbar();
         void applyNativeCursor();
       });
+      unlistenAgentCommand = await tauriListen('screen-ink://agent-command', (event: { payload?: Record<string, unknown> }) => {
+        const payload = event?.payload;
+        if (payload && typeof payload === 'object') {
+          return handleAgentCommand(payload);
+        }
+        return undefined;
+      });
     } catch (_) {}
   }
+  await registerAgentInkSession();
 });
 
 onUnmounted(() => {
@@ -109,6 +117,10 @@ onUnmounted(() => {
   if (unlistenMode) {
     unlistenMode();
     unlistenMode = null;
+  }
+  if (unlistenAgentCommand) {
+    unlistenAgentCommand();
+    unlistenAgentCommand = null;
   }
 });
 
@@ -389,6 +401,228 @@ async function handleExportSnapshot(copyToClipboard: boolean = true) {
       });
     }
   }
+}
+
+/* ==================== A3 Agent UI 握手（原画布执行，同一历史/撤销栈） ==================== */
+const AGENT_MAX_STROKES = 128;
+const AGENT_MAX_POINTS = 8192;
+/** 16MiB PNG 对应的 base64 长度上限（有界结果） */
+const AGENT_MAX_PNG_BASE64_CHARS = 22369624;
+
+let agentSessionId: string | null = null;
+let agentHandshakeDead = false;
+let unlistenAgentCommand: (() => void) | null = null;
+let agentCommandTail: Promise<void> = Promise.resolve();
+const agentBuffer: Array<{ payload: Record<string, unknown>; resolve: () => void }> = [];
+/** 每个 request_id 只允许一次完成回复；迟到/重复回复不重复提交 */
+const handledAgentRequests = new Set<string>();
+
+interface AgentCanvasBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  scale: number;
+}
+
+async function reportInkResult(
+  payload: { request_id: string; session_id: string; operation: string },
+  ok: boolean,
+  result: Record<string, unknown>,
+  error?: 'BUSY' | 'CONFLICT',
+) {
+  const args: Record<string, unknown> = {
+    kind: 'ink',
+    request_id: payload.request_id,
+    session_id: payload.session_id,
+    operation: payload.operation,
+    ok,
+    result,
+  };
+  if (error) args.error = error;
+  try {
+    await invokeIpc('toolbox_agent_ui_result', args);
+  } catch (_) {}
+}
+
+async function registerAgentInkSession() {
+  try {
+    // 契约：ink 会话 args 精确为 {kind:'ink'}，不得携带 note_id
+    const res = await invokeIpc<{ session_id?: string }>('toolbox_agent_ui_ready', { kind: 'ink' });
+    const sessionId = typeof res?.session_id === 'string' ? res.session_id : '';
+    if (!sessionId) throw new Error('ink agent session invalid');
+    agentSessionId = sessionId;
+    const buffered = agentBuffer.splice(0, agentBuffer.length);
+    for (const item of buffered) {
+      const run = () => processAgentCommand(item.payload).then(item.resolve, item.resolve);
+      agentCommandTail = agentCommandTail.then(run, run);
+    }
+  } catch (_) {
+    agentHandshakeDead = true;
+    const buffered = agentBuffer.splice(0, agentBuffer.length);
+    for (const item of buffered) item.resolve();
+  }
+}
+
+function handleAgentCommand(payload: Record<string, unknown>): Promise<void> {
+  if (agentHandshakeDead) return Promise.resolve();
+  if (agentSessionId == null) {
+    if (agentBuffer.length >= 8) return Promise.resolve();
+    return new Promise((resolve) => {
+      agentBuffer.push({ payload, resolve });
+    });
+  }
+  const run = () => processAgentCommand(payload);
+  const next = agentCommandTail.then(run, run);
+  agentCommandTail = next.then(() => undefined, () => undefined);
+  return next;
+}
+
+function agentCanvasBounds(payload: Record<string, unknown>): AgentCanvasBounds | null {
+  const raw = payload.canvas_bounds as Record<string, unknown> | null | undefined;
+  if (!raw || typeof raw !== 'object') return null;
+  const x = Number(raw.x);
+  const y = Number(raw.y);
+  const width = Number(raw.width);
+  const height = Number(raw.height);
+  const scale = Number(raw.scale_factor);
+  if (![x, y, width, height, scale].every((v) => Number.isFinite(v)) || width <= 0 || height <= 0 || scale <= 0) {
+    return null;
+  }
+  return { x, y, width, height, scale };
+}
+
+function makeAgentStroke(points: InkPoint[], color: string, width: number): InkStroke {
+  return {
+    id: `agent_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    tool: 'pen',
+    color,
+    width,
+    points,
+  };
+}
+
+/**
+ * 原生统一把点与线宽转换为逻辑像素；前端只校验，不猜测/再次缩放。
+ */
+function normalizeAgentStroke(raw: unknown, bounds: AgentCanvasBounds): InkStroke | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const record = raw as Record<string, unknown>;
+  const rawPoints = Array.isArray(record.points) ? record.points : [];
+  if (rawPoints.length === 0) return null;
+  const width = Number(record.width);
+  const color = typeof record.color === 'string' && record.color.length <= 32 ? record.color : '#000000';
+  const asLogical: InkPoint[] = [];
+  for (const p of rawPoints) {
+    const point = p as Record<string, unknown> | null;
+    const px = Number(point?.x);
+    const py = Number(point?.y);
+    if (!Number.isFinite(px) || !Number.isFinite(py)) return null;
+    asLogical.push({ x: px, y: py, pressure: 0.5, timestamp: Date.now() });
+  }
+  const logicalW = bounds.width / bounds.scale;
+  const logicalH = bounds.height / bounds.scale;
+  const inside = (pt: InkPoint) => pt.x >= 0 && pt.y >= 0 && pt.x < logicalW && pt.y < logicalH;
+  if (Number.isFinite(width) && width > 0 && asLogical.every(inside)) {
+    return makeAgentStroke(asLogical, color, width);
+  }
+  return null;
+}
+
+function renderInkDataUrl(): { dataUrl: string; width: number; height: number } | null {
+  const canvas = canvasRef.value;
+  if (!canvas) return null;
+  // 仅包含有效墨迹的透明 PNG（不含激光笔临时亮点）
+  const offscreen = document.createElement('canvas');
+  const dpr = window.devicePixelRatio || 1;
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  offscreen.width = w * dpr;
+  offscreen.height = h * dpr;
+  const offCtx = offscreen.getContext('2d');
+  if (offCtx) {
+    offCtx.scale(dpr, dpr);
+    for (const stroke of historyManager.strokes) {
+      renderStroke(offCtx, stroke);
+    }
+  }
+  return { dataUrl: offscreen.toDataURL('image/png'), width: offscreen.width, height: offscreen.height };
+}
+
+async function processAgentCommand(payload: Record<string, unknown>) {
+  const requestId = typeof payload.request_id === 'string' ? payload.request_id : '';
+  const sessionId = typeof payload.session_id === 'string' ? payload.session_id : '';
+  const operation = typeof payload.operation === 'string' ? payload.operation : '';
+  if (!requestId || !sessionId || !operation) return;
+  // 异会话（旧实例/重注册前的迟到请求）不认领
+  if (agentSessionId == null || sessionId !== agentSessionId) return;
+  if (handledAgentRequests.has(requestId)) return;
+
+  const ack = (ok: boolean, result: Record<string, unknown> = {}, error?: 'BUSY' | 'CONFLICT') => {
+    handledAgentRequests.add(requestId);
+    void reportInkResult({ request_id: requestId, session_id: sessionId, operation }, ok, result, error);
+  };
+
+  if (operation === 'draw') {
+    // 用户正在画：返回 BUSY，绝不丢弃用户笔画
+    if (isDrawing) {
+      ack(false, {}, 'BUSY');
+      return;
+    }
+    const bounds = agentCanvasBounds(payload);
+    const rawStrokes = Array.isArray(payload.strokes) ? payload.strokes : [];
+    if (!bounds || rawStrokes.length === 0 || rawStrokes.length > AGENT_MAX_STROKES) {
+      ack(false);
+      return;
+    }
+    let applied = 0;
+    let pointsTotal = 0;
+    for (const raw of rawStrokes) {
+      const stroke = normalizeAgentStroke(raw, bounds);
+      if (!stroke) continue;
+      pointsTotal += stroke.points.length;
+      if (pointsTotal > AGENT_MAX_POINTS) break;
+      historyManager.push(stroke);
+      applied += 1;
+    }
+    if (applied > 0) {
+      redrawAll();
+      notifyToolbar();
+    }
+    ack(true, { applied });
+    return;
+  }
+
+  if (operation === 'clear') {
+    if (isDrawing) {
+      ack(false, {}, 'BUSY');
+      return;
+    }
+    historyManager.clear();
+    laserManager.clear();
+    redrawAll();
+    notifyToolbar();
+    ack(true);
+    return;
+  }
+
+  if (operation === 'snapshot') {
+    const rendered = renderInkDataUrl();
+    if (!rendered) {
+      ack(false);
+      return;
+    }
+    const comma = rendered.dataUrl.indexOf(',');
+    const base64 = comma >= 0 ? rendered.dataUrl.slice(comma + 1) : rendered.dataUrl;
+    if (!base64 || base64.length > AGENT_MAX_PNG_BASE64_CHARS) {
+      ack(false);
+      return;
+    }
+    ack(true, { png_base64: base64, width: rendered.width, height: rendered.height });
+    return;
+  }
+
+  ack(false);
 }
 </script>
 

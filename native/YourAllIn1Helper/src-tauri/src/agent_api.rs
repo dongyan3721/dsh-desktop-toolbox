@@ -591,20 +591,21 @@ fn notes_read(host: &DesktopHost, params: &Value, cancel: &AtomicBool) -> Result
     // A write cursor left by commit_agent_update is only an autosave fence.
     // Handshake is required for an open window, and only after that window
     // has registered with toolbox_agent_ui_ready.
-    if note.is_open {
+    let _editor = if note.is_open {
         if host.agent_ui.session_for_note(&id).is_none() {
             return Err(ControlError::new(
                 "UNAVAILABLE",
                 "open note editor is not synchronized yet",
             ));
         }
-        sync_open_editor(host, &id, cancel)?;
+        let editor = sync_open_editor(host, &id, cancel)?;
         note = host
             .sticky_note
             .get_note(host.kernel().context(), &id)
             .map_err(execution)?
             .ok_or_else(|| ControlError::new("INVALID_REQUEST", "note was not found"))?;
-    }
+        Some(editor)
+    } else { None };
     if note.content_md.len() > MAX_NOTE_BODY {
         return Err(ControlError::new(
             "INVALID_REQUEST",
@@ -678,19 +679,16 @@ fn notes_update(
         .map_err(execution)?
         .ok_or_else(|| ControlError::new("INVALID_REQUEST", "note was not found"))?;
     let open = existing.is_open;
-    if open {
+    let editor = if open {
         if host.agent_ui.session_for_note(&id).is_none() {
             return Err(ControlError::new(
                 "UNAVAILABLE",
                 "open note editor is not synchronized yet",
             ));
         }
-        sync_open_editor(host, &id, cancel)?;
-    }
+        Some(sync_open_editor(host, &id, cancel)?)
+    } else { None };
     if cancel.load(Ordering::Acquire) {
-        if open {
-            release_note(host, &id);
-        }
         return Err(ControlError::cancelled());
     }
     guard(host, "sticky_note")?;
@@ -707,15 +705,9 @@ fn notes_update(
     let note = match outcome {
         mod_sticky_note::ClosedNoteSave::Applied(note) => note,
         mod_sticky_note::ClosedNoteSave::Conflict(_) => {
-            if open {
-                release_note(host, &id);
-            }
             return Err(ControlError::new("CONFLICT", "note changed before the update"));
         }
         mod_sticky_note::ClosedNoteSave::Missing => {
-            if open {
-                release_note(host, &id);
-            }
             return Err(ControlError::new("INVALID_REQUEST", "note was not found"));
         }
     };
@@ -724,11 +716,9 @@ fn notes_update(
     let display_sync = if !open {
         "closed"
     } else if cancel.load(Ordering::Acquire) {
-        release_note(host, &id);
         "pending"
     } else {
-        let applied = apply_open_editor(host, &id, &note, session.unwrap_or(0));
-        release_note(host, &id);
+        let applied = apply_open_editor(host, &id, &editor.as_ref().unwrap().session, &note, session.unwrap_or(0));
         if applied { "applied" } else { "pending" }
     };
     Ok(json!({
@@ -859,7 +849,17 @@ fn remember_commit(host: &DesktopHost, cancel: &AtomicBool) {
     }
 }
 
-fn sync_open_editor(host: &DesktopHost, note_id: &str, cancel: &AtomicBool) -> Result<(), ControlError> {
+struct PreparedNote<'a> {
+    host: &'a DesktopHost,
+    id: String,
+    session: String,
+}
+
+impl Drop for PreparedNote<'_> {
+    fn drop(&mut self) { release_note(self.host, &self.id, &self.session); }
+}
+
+fn sync_open_editor<'a>(host: &'a DesktopHost, note_id: &str, cancel: &AtomicBool) -> Result<PreparedNote<'a>, ControlError> {
     let session = host.agent_ui.session_for_note(note_id).ok_or_else(|| {
         ControlError::new("UNAVAILABLE", "open note editor is not synchronized yet")
     })?;
@@ -876,21 +876,18 @@ fn sync_open_editor(host: &DesktopHost, note_id: &str, cancel: &AtomicBool) -> R
     ) {
         Ok(ack) => ack,
         Err(error) => {
-            release_note(host, note_id);
+            release_note(host, note_id, &session);
             return Err(error);
         }
     };
     if !ack.ok {
-        release_note(host, note_id);
+        release_note(host, note_id, &session);
         return Err(ui_failure(&ack));
     }
-    Ok(())
+    Ok(PreparedNote { host, id: note_id.to_string(), session })
 }
 
-fn apply_open_editor(host: &DesktopHost, note_id: &str, note: &mod_sticky_note::StickyNoteRecord, write_session_id: u64) -> bool {
-    let Some(session) = host.agent_ui.session_for_note(note_id) else {
-        return false;
-    };
+fn apply_open_editor(host: &DesktopHost, note_id: &str, session: &str, note: &mod_sticky_note::StickyNoteRecord, write_session_id: u64) -> bool {
     let label = format!("sticky-note-{note_id}");
     let mut fields = Map::new();
     fields.insert("note_id".to_string(), json!(note_id));
@@ -908,7 +905,7 @@ fn apply_open_editor(host: &DesktopHost, note_id: &str, note: &mod_sticky_note::
     matches!(
         host.agent_ui.roundtrip(
             &label,
-            &session,
+            session,
             "sticky://agent-command",
             "apply",
             fields,
@@ -918,16 +915,13 @@ fn apply_open_editor(host: &DesktopHost, note_id: &str, note: &mod_sticky_note::
     )
 }
 
-fn release_note(host: &DesktopHost, note_id: &str) {
-    let Some(session) = host.agent_ui.session_for_note(note_id) else {
-        return;
-    };
+fn release_note(host: &DesktopHost, note_id: &str, session: &str) {
     let label = format!("sticky-note-{note_id}");
     let mut fields = Map::new();
     fields.insert("note_id".to_string(), json!(note_id));
     let _ = host.agent_ui.roundtrip(
         &label,
-        &session,
+        session,
         "sticky://agent-command",
         "release",
         fields,
@@ -1017,7 +1011,7 @@ fn logical_strokes(params: &Value, bounds: &CanvasBounds) -> Result<Value, Contr
         out.push(json!({
             "points": logical,
             "color": stroke.get("color").cloned().unwrap_or(Value::Null),
-            "width": stroke.get("width").cloned().unwrap_or(Value::Null),
+            "width": stroke.get("width").and_then(Value::as_f64).map(|width| width / bounds.scale),
         }));
     }
     Ok(Value::Array(out))
@@ -1660,12 +1654,15 @@ mod tests {
         );
         assert!(ready.ok, "{:?}", ready.error);
         let flushed = AtomicBool::new(false);
+        let released = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let release_counter = released.clone();
         let ui = std::sync::Arc::downgrade(&host.agent_ui);
         let ptr = SyncPtr(&host as *const DesktopHost);
         let note_id = id.clone();
         host.agent_ui.set_emitter(std::sync::Arc::new(move |label, _event, payload| {
             let host = ptr.host();
             let operation = payload["operation"].as_str().unwrap_or("");
+            if operation == "release" { release_counter.fetch_add(1, Ordering::SeqCst); }
             if operation == "prepare" && !flushed.swap(true, Ordering::AcqRel) {
                 host.sticky_note
                     .save_content(
@@ -1714,6 +1711,10 @@ mod tests {
         .unwrap();
         assert_eq!(updated["display_sync"], "applied");
         assert_eq!(updated["content_md"], "agent-text");
+        assert_eq!(released.load(Ordering::SeqCst), 2, "conflict and update must both release the editor");
+        let reread = dispatch(&host, "agent.notes.read", &json!({"id": id}), &AtomicBool::new(false)).unwrap();
+        assert_eq!(reread["content_md"], "agent-text");
+        assert_eq!(released.load(Ordering::SeqCst), 3, "successful reads must release immediately");
         assert_ne!(updated["write_session_id"].as_u64().unwrap(), page);
         let stale = host
             .sticky_note
@@ -1796,6 +1797,7 @@ mod tests {
         let payload = seen.lock().unwrap().last().cloned().unwrap();
         assert_eq!(payload["strokes"][0]["points"][0]["x"], 2.0);
         assert_eq!(payload["strokes"][0]["points"][0]["y"], 3.0);
+        assert_eq!(payload["strokes"][0]["width"], 1.0);
         assert_eq!(payload["canvas_bounds"]["scale_factor"], 2.0);
         let duplicate = host.invoke_agent_ui(
             "screen-ink-canvas",

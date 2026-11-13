@@ -92,7 +92,8 @@
       "screenshot": "Enumerate displays, capture monitor regions, and generate image artifacts",
       "clipboard": "Bounded query, read text history, and write plain text to clipboard",
       "screen_ink": "Inspect canvas state, draw strokes, clear, and capture snapshot on the shared canvas",
-      "app_usage": "Inspect usage status, date range overview, app and hourly breakdown"
+      "app_usage": "Inspect usage status, date range overview, app and hourly breakdown",
+      "sticky_note": "Search, read, create, update notes, and open the original note window"
     },
     "names": {
       "screenshot": "Enhanced Screenshot & Pin",
@@ -814,7 +815,7 @@
     "pin": "Pin Window",
     "unpin": "Unpin Window",
     "close": "Close",
-    "keychainCredentials": "Keys are stored in the macOS login keychain (items owned by this app) and never written to config, database or logs; the system may ask for keychain access the first time.",
+    "keychainCredentials": "Keys are stored in the system credential store (Windows Credential Manager or macOS login keychain, in items owned by this app), never in config, database or logs. First access may require system authorization.",
     "apiKeyPlaceholderKeychain": "Enter API Key (saved to system keychain)"
   },
   "vault": {
