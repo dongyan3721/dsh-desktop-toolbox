@@ -149,17 +149,17 @@ export function createAgentImagePublisher({ attachments, artifactReader }) {
       const artifact = validateArtifactDescriptor(descriptor)
 
       const initialAccess = await ensureAuthorized(signal)
-      const revision = descriptor.revision ?? initialAccess?.snapshot?.revision
+      // Artifact revision is a per-module grant epoch. Snapshot revision is
+      // the global metadata revision: their counters must not be equated.
+      const revision = descriptor.revision
+      const publicationRevision = initialAccess?.snapshot?.revision
       if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) throw internal('invalid artifact authorization revision')
       if (descriptor.module_id !== undefined && descriptor.module_id !== moduleId) throw internal('artifact belongs to another module')
       const recheck = async () => {
         const access = await ensureAuthorized(signal)
-        if (revision !== undefined && access?.snapshot?.revision !== undefined && access.snapshot.revision !== revision) {
+        if (publicationRevision !== undefined && access?.snapshot?.revision !== undefined && access.snapshot.revision !== publicationRevision) {
           throw agentError('AGENT_ACCESS_DENIED', 'image authorization changed during publication')
         }
-      }
-      if (revision !== undefined && initialAccess?.snapshot?.revision !== undefined && initialAccess.snapshot.revision !== revision) {
-        throw agentError('AGENT_ACCESS_DENIED', 'image authorization changed before publication')
       }
       throwIfAborted(signal)
       const loaded = await artifactReader.read(artifact, { signal, moduleId, revision })

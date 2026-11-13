@@ -11,10 +11,10 @@ test('publisher carries trusted module and grant revision to the artifact reader
     artifactReader: { async read(descriptor, options) { received = { descriptor, options }; return new Uint8Array(8); } },
     attachments: { async saveImage() { return image; } },
   });
-  await publisher.publish({ moduleId: 'screen_ink', descriptor: artifact, signal: new AbortController().signal,
+  await publisher.publish({ moduleId: 'screen_ink', descriptor: { ...artifact, revision: 2 }, signal: new AbortController().signal,
     async ensureAuthorized() { return { snapshot: { revision: 9 } }; } });
   assert.equal(received.options.moduleId, 'screen_ink');
-  assert.equal(received.options.revision, 9);
+  assert.equal(received.options.revision, 2);
   assert.equal(received.descriptor.artifact_id, artifact.artifact_id);
 });
 
