@@ -113,6 +113,9 @@ export interface ModuleStatus {
   enabled: boolean;
   supported: boolean;
   unavailable_reason: string;
+  agent_supported?: boolean;
+  agent_allowed?: boolean;
+  agent_effective?: boolean;
 }
 
 
