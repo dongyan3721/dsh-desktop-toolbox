@@ -29,7 +29,8 @@ pub mod shortcut;
 pub mod storage;
 pub mod window_manager;
 
-use parking_lot::RwLock;
+use parking_lot::{Mutex, RwLock};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{path::PathBuf, sync::Arc};
 use tracing::{info, warn};
@@ -195,6 +196,7 @@ impl AppKernelBuilder {
             registry: Arc::new(self.registry),
             config_path,
             agent_revision: AtomicU64::new(1),
+            agent_grant_epoch: Mutex::new(HashMap::new()),
         })
     }
 
@@ -212,6 +214,8 @@ pub struct AppKernel {
     registry: Arc<ModuleRegistry>,
     config_path: PathBuf,
     agent_revision: AtomicU64,
+    /// Epoch of the current grant. Revoking increments it so older artifacts stay dead after regrant.
+    agent_grant_epoch: Mutex<HashMap<String, u64>>,
 }
 
 impl AppKernel {
@@ -299,16 +303,12 @@ impl AppKernel {
         if !agent_supported(module_id) {
             return Err(CoreError::AgentUnsupported(module_id.to_string()));
         }
-        let current = self
-            .context
-            .config
-            .read()
-            .modules
-            .agent_access
-            .get(module_id)
-            .copied()
-            .unwrap_or(false);
-        if current == allowed {
+        let modules = self.context.config.read().modules.clone();
+        let current = modules.agent_access.get(module_id).copied().unwrap_or(false);
+        let sticky_needs_generation = module_id == "sticky_note"
+            && allowed
+            && modules.agent_support_generation < crate::config::STICKY_GRANT_GENERATION;
+        if current == allowed && !sticky_needs_generation {
             return Ok(());
         }
         self.update_config(|config| {
@@ -316,9 +316,27 @@ impl AppKernel {
                 .modules
                 .agent_access
                 .insert(module_id.to_string(), allowed);
+            if module_id == "sticky_note" && allowed {
+                config.modules.agent_support_generation = config
+                    .modules
+                    .agent_support_generation
+                    .max(crate::config::STICKY_GRANT_GENERATION);
+            }
         })?;
+        if current && !allowed {
+            self.bump_grant_epoch(module_id);
+        }
         self.bump_agent_revision();
         Ok(())
+    }
+
+    /// Grant epoch captured with an artifact. Revocation moves it forward permanently.
+    pub fn agent_grant_epoch(&self, module_id: &str) -> u64 {
+        self.agent_grant_epoch
+            .lock()
+            .get(module_id)
+            .copied()
+            .unwrap_or(1)
     }
 
     /// Re-reads support, availability, enablement and the grant. Call this before every Agent effect.
@@ -363,6 +381,12 @@ impl AppKernel {
 
     fn bump_agent_revision(&self) {
         self.agent_revision.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn bump_grant_epoch(&self, module_id: &str) {
+        let mut epochs = self.agent_grant_epoch.lock();
+        let next = epochs.get(module_id).copied().unwrap_or(1).saturating_add(1);
+        epochs.insert(module_id.to_string(), next);
     }
 
     /// Gracefully shuts down all modules in reverse registration order and destroys all open WebViews.

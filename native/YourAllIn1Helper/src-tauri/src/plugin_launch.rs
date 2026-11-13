@@ -20,6 +20,11 @@ pub const AGENT_DATA_METHODS: &[&str] = &[
     "agent.usage.overview",
     "agent.usage.apps",
     "agent.usage.hourly",
+    "agent.notes.search",
+    "agent.notes.read",
+    "agent.notes.create",
+    "agent.notes.update",
+    "agent.notes.open",
 ];
 
 pub const DESKTOP_CAPABILITIES: &[&str] = &[
@@ -42,6 +47,11 @@ pub const DESKTOP_CAPABILITIES: &[&str] = &[
     "agent.usage.overview",
     "agent.usage.apps",
     "agent.usage.hourly",
+    "agent.notes.search",
+    "agent.notes.read",
+    "agent.notes.create",
+    "agent.notes.update",
+    "agent.notes.open",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]

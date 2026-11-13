@@ -23,6 +23,13 @@ const MAX_PIXELS: u64 = 16_000_000;
 const MAX_PNG_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STROKES: usize = 128;
 const MAX_POINTS: usize = 8192;
+const MAX_NOTE_BODY: usize = 256 * 1024;
+const MAX_TITLE_SCALARS: usize = 500;
+const MAX_QUERY_SCALARS: usize = 200;
+const MAX_NOTE_ID_SCALARS: usize = 80;
+const NOTE_LIST_LIMIT: i64 = 20;
+const MAX_NOTE_OFFSET: i64 = 10_000;
+const JS_MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 pub fn dispatch(
     host: &DesktopHost,
@@ -113,6 +120,11 @@ pub fn dispatch(
         "agent.usage.overview" => usage_overview(host, params),
         "agent.usage.apps" => usage_apps(host, params),
         "agent.usage.hourly" => usage_hourly(host, params),
+        "agent.notes.search" => notes_search(host, params),
+        "agent.notes.read" => notes_read(host, params),
+        "agent.notes.create" => notes_create(host, params, cancel),
+        "agent.notes.update" => notes_update(host, params, cancel),
+        "agent.notes.open" => notes_open(host, params, cancel),
         _ => Err(ControlError::new(
             "UNSUPPORTED",
             "method is not an agent data method",
@@ -406,6 +418,258 @@ fn usage_hourly(host: &DesktopHost, params: &Value) -> Result<Value, ControlErro
         .map_err(execution)?;
     guard(host, "app_usage")?;
     Ok(serde_json::to_value(hourly).map_err(internal)?)
+}
+
+fn notes_search(host: &DesktopHost, params: &Value) -> Result<Value, ControlError> {
+    guard(host, "sticky_note")?;
+    let map = require_exact(params, &["query", "limit", "offset"])?;
+    let query = match map.get("query") {
+        None => None,
+        Some(Value::String(value))
+            if !value.contains('\0') && value.chars().count() <= MAX_QUERY_SCALARS =>
+        {
+            if value.is_empty() {
+                None
+            } else {
+                Some(value.as_str())
+            }
+        }
+        _ => return Err(ControlError::new("INVALID_REQUEST", "query is invalid")),
+    };
+    let limit = match map.get("limit") {
+        None => NOTE_LIST_LIMIT,
+        Some(value) => note_limit(value)?,
+    };
+    let offset = match map.get("offset") {
+        None => 0,
+        Some(value) => {
+            let offset = value
+                .as_i64()
+                .filter(|offset| (0..=MAX_NOTE_OFFSET).contains(offset))
+                .ok_or_else(|| ControlError::new("INVALID_REQUEST", "offset is out of range"))?;
+            offset
+        }
+    };
+    let notes = host
+        .sticky_note
+        .search_summaries(
+            host.kernel().context(),
+            query,
+            limit as usize,
+            offset as usize,
+        )
+        .map_err(execution)?;
+    guard(host, "sticky_note")?;
+    Ok(json!({ "notes": notes }))
+}
+
+fn notes_read(host: &DesktopHost, params: &Value) -> Result<Value, ControlError> {
+    guard(host, "sticky_note")?;
+    let map = require_exact(params, &["id"])?;
+    let id = required_note_id(map)?;
+    let note = host
+        .sticky_note
+        .get_note(host.kernel().context(), &id)
+        .map_err(execution)?
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "note was not found"))?;
+    if note.is_open || host.sticky_note.has_write_session(&id) {
+        return Err(ControlError::new(
+            "UNAVAILABLE",
+            "open note editor is not synchronized yet",
+        ));
+    }
+    if note.content_md.len() > MAX_NOTE_BODY {
+        return Err(ControlError::new(
+            "INVALID_REQUEST",
+            "note body exceeds 256KiB",
+        ));
+    }
+    guard(host, "sticky_note")?;
+    Ok(json!({
+        "id": note.id,
+        "title": note.title,
+        "content_md": note.content_md,
+        "updated_at": note.updated_at,
+        "is_open": note.is_open,
+    }))
+}
+
+fn notes_create(
+    host: &DesktopHost,
+    params: &Value,
+    cancel: &AtomicBool,
+) -> Result<Value, ControlError> {
+    guard(host, "sticky_note")?;
+    let map = require_exact(params, &["title", "content_md"])?;
+    let title = required_title(map)?;
+    let content = optional_body(map)?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(ControlError::cancelled());
+    }
+    guard(host, "sticky_note")?;
+    let note = host
+        .sticky_note
+        .create_closed_note(host.kernel().context(), Some(&title), Some(&content))
+        .map_err(execution)?;
+    guard(host, "sticky_note")?;
+    Ok(json!({
+        "id": note.id,
+        "title": note.title,
+        "content_md": note.content_md,
+        "updated_at": note.updated_at,
+        "is_open": note.is_open,
+    }))
+}
+
+fn notes_update(
+    host: &DesktopHost,
+    params: &Value,
+    cancel: &AtomicBool,
+) -> Result<Value, ControlError> {
+    guard(host, "sticky_note")?;
+    let map = require_exact(params, &["id", "expected_updated_at", "title", "content_md"])?;
+    let id = required_note_id(map)?;
+    let expected = required_safe_integer(map, "expected_updated_at")?;
+    let title = match map.get("title") {
+        None => None,
+        Some(_) => Some(required_title(map)?),
+    };
+    let content = match map.get("content_md") {
+        None => None,
+        Some(_) => Some(optional_body(map)?),
+    };
+    if title.is_none() && content.is_none() {
+        return Err(ControlError::new(
+            "INVALID_REQUEST",
+            "title or content_md is required",
+        ));
+    }
+    let existing = host
+        .sticky_note
+        .get_note(host.kernel().context(), &id)
+        .map_err(execution)?
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "note was not found"))?;
+    if existing.is_open || host.sticky_note.has_write_session(&id) {
+        return Err(ControlError::new(
+            "UNAVAILABLE",
+            "open note editor is not synchronized yet",
+        ));
+    }
+    if cancel.load(Ordering::Acquire) {
+        return Err(ControlError::cancelled());
+    }
+    guard(host, "sticky_note")?;
+    let (outcome, session) = host
+        .sticky_note
+        .commit_agent_update(
+            host.kernel().context(),
+            &id,
+            title.as_deref(),
+            content.as_deref(),
+            expected,
+        )
+        .map_err(execution)?;
+    let note = match outcome {
+        mod_sticky_note::ClosedNoteSave::Applied(note) => note,
+        mod_sticky_note::ClosedNoteSave::Conflict(_) => {
+            return Err(ControlError::new("CONFLICT", "note changed before the update"));
+        }
+        mod_sticky_note::ClosedNoteSave::Missing => {
+            return Err(ControlError::new("INVALID_REQUEST", "note was not found"));
+        }
+    };
+    guard(host, "sticky_note")?;
+    Ok(json!({
+        "id": note.id,
+        "title": note.title,
+        "content_md": note.content_md,
+        "updated_at": note.updated_at,
+        "is_open": note.is_open,
+        "write_session_id": session,
+        "display_sync": "closed",
+    }))
+}
+
+fn notes_open(
+    host: &DesktopHost,
+    params: &Value,
+    cancel: &AtomicBool,
+) -> Result<Value, ControlError> {
+    guard(host, "sticky_note")?;
+    let map = require_exact(params, &["id"])?;
+    let id = required_note_id(map)?;
+    if cancel.load(Ordering::Acquire) {
+        return Err(ControlError::cancelled());
+    }
+    guard(host, "sticky_note")?;
+    let note = host
+        .sticky_note
+        .show_note(host.kernel().context(), &id)
+        .map_err(|error| {
+            if error.to_string().contains("not found") || error.to_string().contains("未找到") {
+                ControlError::new("INVALID_REQUEST", "note was not found")
+            } else {
+                execution(error)
+            }
+        })?;
+    guard(host, "sticky_note")?;
+    Ok(json!({
+        "id": note.id,
+        "title": note.title,
+        "updated_at": note.updated_at,
+        "is_open": note.is_open,
+        "window_label": mod_sticky_note::StickyNoteModule::window_label_for(&note.id),
+    }))
+}
+
+fn required_note_id(map: &Map<String, Value>) -> Result<String, ControlError> {
+    match map.get("id") {
+        Some(Value::String(id))
+            if (1..=MAX_NOTE_ID_SCALARS).contains(&id.chars().count())
+                && id.chars().all(|ch| !ch.is_control()) =>
+        {
+            Ok(id.clone())
+        }
+        _ => Err(ControlError::new("INVALID_REQUEST", "id is invalid")),
+    }
+}
+
+fn required_title(map: &Map<String, Value>) -> Result<String, ControlError> {
+    match map.get("title") {
+        Some(Value::String(title))
+            if !title.contains('\0')
+                && (1..=MAX_TITLE_SCALARS).contains(&title.chars().count()) =>
+        {
+            Ok(title.clone())
+        }
+        _ => Err(ControlError::new("INVALID_REQUEST", "title is invalid")),
+    }
+}
+
+fn optional_body(map: &Map<String, Value>) -> Result<String, ControlError> {
+    match map.get("content_md") {
+        None => Ok(String::new()),
+        Some(Value::String(body)) if !body.contains('\0') && body.len() <= MAX_NOTE_BODY => {
+            Ok(body.clone())
+        }
+        _ => Err(ControlError::new("INVALID_REQUEST", "content_md is invalid")),
+    }
+}
+
+fn required_safe_integer(map: &Map<String, Value>, key: &str) -> Result<i64, ControlError> {
+    let value = map
+        .get(key)
+        .and_then(Value::as_i64)
+        .filter(|value| (0..=JS_MAX_SAFE_INTEGER).contains(value))
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "expected a safe integer"))?;
+    Ok(value)
+}
+
+fn note_limit(value: &Value) -> Result<i64, ControlError> {
+    value
+        .as_i64()
+        .filter(|limit| (1..=NOTE_LIST_LIMIT).contains(limit))
+        .ok_or_else(|| ControlError::new("INVALID_REQUEST", "limit must be 1 to 20"))
 }
 
 fn guard(host: &DesktopHost, module_id: &str) -> Result<(), ControlError> {
@@ -710,7 +974,20 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|method| method == "agent.ink.draw" || method == "agent.ink.snapshot"));
+            .any(|method| method == "agent.ink.draw" || method == "agent.ink.snapshot" || method == "agent.artifacts.read"));
+        assert!(snapshot["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|method| method == "agent.notes.search"));
+        let notes = snapshot["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|module| module["id"] == "sticky_note")
+            .unwrap();
+        assert_eq!(notes["agent_supported"], true);
+        assert_eq!(notes["agent_allowed"], false);
         let clipboard = snapshot["modules"]
             .as_array()
             .unwrap()
@@ -834,8 +1111,8 @@ mod tests {
         let snapshot = dispatch(&host, "agent.ink.snapshot", &json!({}), &AtomicBool::new(false)).unwrap_err();
         assert_eq!(snapshot.code, "UNAVAILABLE");
         assert!(snapshot.message.contains("pixels"));
-        let notes = dispatch(&host, "agent.notes.create", &json!({}), &AtomicBool::new(false)).unwrap_err();
-        assert_eq!(notes.code, "UNSUPPORTED");
+        let media = dispatch(&host, "agent.media.transcribe", &json!({}), &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(media.code, "UNSUPPORTED");
         let _ = host.kernel().shutdown();
     }
 
@@ -879,6 +1156,99 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(too_long.code, "INVALID_REQUEST");
+        let _ = host.kernel().shutdown();
+    }
+
+    #[test]
+    fn closed_notes_share_the_database_and_reject_stale_or_open_edits() {
+        let (_dir, host) = host();
+        let denied = dispatch(
+            &host,
+            "agent.notes.create",
+            &json!({"title": "synthetic"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(denied.code, "AGENT_ACCESS_DENIED");
+        grant(&host, "sticky_note");
+        let invalid = dispatch(&host, "agent.notes.create", &json!({}), &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(invalid.code, "INVALID_REQUEST");
+        let created = dispatch(
+            &host,
+            "agent.notes.create",
+            &json!({"title": "synthetic", "content_md": "alpha"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(created["is_open"], false);
+        let id = created["id"].as_str().unwrap();
+        let found = dispatch(
+            &host,
+            "agent.notes.search",
+            &json!({"query": "alpha", "limit": 20, "offset": 0}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(found["notes"][0]["id"], id);
+        assert!(found["notes"][0].get("content_md").is_none());
+        let read = dispatch(&host, "agent.notes.read", &json!({"id": id}), &AtomicBool::new(false)).unwrap();
+        assert_eq!(read["content_md"], "alpha");
+        let human = host
+            .sticky_note
+            .save_closed_content(
+                host.kernel().context(),
+                id,
+                None,
+                Some("human-edit"),
+                Some(read["updated_at"].as_i64().unwrap()),
+            )
+            .unwrap();
+        let mod_sticky_note::ClosedNoteSave::Applied(human_note) = human else {
+            panic!("human edit was not stored");
+        };
+        let conflict = dispatch(
+            &host,
+            "agent.notes.update",
+            &json!({"id": id, "expected_updated_at": read["updated_at"], "content_md": "lost"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(conflict.code, "CONFLICT");
+        assert_eq!(
+            host.sticky_note.get_note(host.kernel().context(), id).unwrap().unwrap().content_md,
+            "human-edit"
+        );
+        let updated = dispatch(
+            &host,
+            "agent.notes.update",
+            &json!({"id": id, "expected_updated_at": human_note.updated_at, "title": "synthetic-2"}),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(updated["title"], "synthetic-2");
+        assert_eq!(updated["content_md"], "human-edit");
+        assert_eq!(updated["display_sync"], "closed");
+        let stale = host
+            .sticky_note
+            .save_content(host.kernel().context(), id, None, "old-autosave", Some(1), None)
+            .unwrap();
+        assert!(!stale.applied);
+        let current = host.sticky_note.get_note(host.kernel().context(), id).unwrap().unwrap();
+        assert_eq!(current.content_md, "human-edit");
+        let opened = dispatch(&host, "agent.notes.open", &json!({"id": id}), &AtomicBool::new(false)).unwrap();
+        assert_eq!(opened["is_open"], true);
+        assert_eq!(opened["window_label"], format!("sticky-note-{id}"));
+        let unread = dispatch(&host, "agent.notes.read", &json!({"id": id}), &AtomicBool::new(false)).unwrap_err();
+        assert_eq!(unread.code, "UNAVAILABLE");
+        let huge = "x".repeat(256 * 1024 + 1);
+        let oversized = dispatch(
+            &host,
+            "agent.notes.create",
+            &json!({"title": "big", "content_md": huge}),
+            &AtomicBool::new(false),
+        )
+        .unwrap_err();
+        assert_eq!(oversized.code, "INVALID_REQUEST");
         let _ = host.kernel().shutdown();
     }
 }
