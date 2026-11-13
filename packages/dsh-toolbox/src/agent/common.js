@@ -114,6 +114,30 @@ export function renderText(text) {
   return [{ type: 'text', text }]
 }
 
+/**
+ * Project a publisher-owned image result into the SDK's actual image block.
+ * A bare path or an unknown object never becomes an image block.
+ */
+export function renderAgentImage(value, label) {
+  const image = value !== null && typeof value === 'object' ? value.image : undefined
+  if (image === null || typeof image !== 'object' || Array.isArray(image)
+    || typeof image.attachmentId !== 'string' || image.attachmentId === '') {
+    return renderJson(value)
+  }
+  const dimensions = Number.isSafeInteger(image.width) && Number.isSafeInteger(image.height)
+    ? `（${image.width}×${image.height}px）`
+    : ''
+  const original = image.originalDimensions
+  const scaled = original !== null && typeof original === 'object'
+    && Number.isSafeInteger(original.width) && Number.isSafeInteger(original.height)
+    ? `，原始尺寸 ${original.width}×${original.height}px`
+    : ''
+  return [
+    { type: 'text', text: `${label}${dimensions}${scaled}` },
+    { type: 'image', attachment: image },
+  ]
+}
+
 /** Validate a real calendar date in YYYY-MM-DD form without timezone drift. */
 export function requireDate(value, field) {
   if (typeof value !== 'string') throw invalidRequest(`${field} must be a YYYY-MM-DD string`)
