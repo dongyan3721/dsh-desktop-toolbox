@@ -307,7 +307,7 @@ impl DesktopControl for TauriDesktopControl {
         let params = params.clone();
         let on_ui = matches!(
             method.as_str(),
-            "agent.ink.start" | "agent.ink.stop" | "agent.ink.passthrough" | "agent.ink.clear"
+            "agent.ink.start" | "agent.ink.stop" | "agent.ink.passthrough"
         );
         if on_ui {
             return self.on_main(move |app| {

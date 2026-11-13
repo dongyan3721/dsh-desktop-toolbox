@@ -32,10 +32,12 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{atomic::AtomicBool, Arc},
 };
 
 mod agent_api;
+mod agent_artifacts;
+mod agent_ui;
 mod clipboard_window;
 mod desktop_control;
 mod plugin_host;
@@ -130,6 +132,10 @@ pub struct DesktopHost {
     shortcut_recording_owner: parking_lot::RwLock<Option<String>>,
     /// Texts accepted by the mock clipboard path. Production writes go to the OS instead.
     agent_clipboard_writes: parking_lot::Mutex<Vec<String>>,
+    pub(crate) agent_ui: Arc<agent_ui::AgentUi>,
+    pub(crate) agent_artifacts: parking_lot::Mutex<agent_artifacts::AgentArtifacts>,
+    /// Test hook: after a write commits, mark the call cancelled. The result must stay committed.
+    pub(crate) agent_flip_cancel_on_commit: AtomicBool,
 }
 
 impl DesktopHost {
@@ -297,6 +303,9 @@ impl DesktopHost {
             shortcut_preference_gate: parking_lot::Mutex::new(()),
             shortcut_recording_owner: parking_lot::RwLock::new(None),
             agent_clipboard_writes: parking_lot::Mutex::new(Vec::new()),
+            agent_ui: Arc::new(agent_ui::AgentUi::default()),
+            agent_artifacts: parking_lot::Mutex::new(agent_artifacts::AgentArtifacts::default()),
+            agent_flip_cancel_on_commit: AtomicBool::new(false),
         };
         host.sync_panel_shortcuts()?;
         Ok(host)
@@ -352,6 +361,14 @@ impl DesktopHost {
         match self.dispatch_inner(cmd, args) {
             Ok(val) => IpcResponse::success(val),
             Err(err) => IpcResponse::err(err.to_string()),
+        }
+    }
+
+    /// Human UI handshake. `window_label` is the actual WebView, never a value from the payload.
+    pub fn invoke_agent_ui(&self, window_label: &str, cmd: &str, args: Value) -> IpcResponse {
+        match self.agent_ui.handle(window_label, cmd, &args) {
+            Ok(val) => IpcResponse::success(val),
+            Err(err) => IpcResponse::err(err.message),
         }
     }
 }

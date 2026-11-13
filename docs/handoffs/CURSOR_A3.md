@@ -1,26 +1,43 @@
-# Cursor / Grok 4.7 High 交接 — A3 第一阶段
+# Cursor / Grok 4.7 High 交接 — A3
 
 工作树：`D:\Code\dsh-toolbox\.worktrees\cursor`
 
 分支：`agent/cursor-native`
 
-没有启动桌面，没有真实截屏、系统剪贴板、全局热键或安装 Profile。这一阶段只包含五项授权迁移和关闭状态便笺。打开编辑器握手、`agent.artifacts.read`、原画布 draw/snapshot 还没有接通，不能当成完成。
+第一阶段提交 `52d3070` 已在 integration。本交接覆盖其后的原生剩余实现。没有启动桌面，没有真实截屏、系统剪贴板、全局热键或安装 Profile。Vue 由 CodeBuddy 在原 antigravity 工作树实现，协议字段没有另起一套。
 
-## 已实现
+## 便笺
 
-配置版本 6。从版本 5 升级时，如果 `agent_access.sticky_note` 曾为 true，迁移把它改回 false，并写入 `modules.agent_support_generation = 1`。缺省或 0 代不能把便笺授权算作有效。人之后调用 `kernel_set_agent_access` 才会重新打开。截图、剪贴板、屏幕注释、应用时长的已有授权不动。`media_proc` 等五项仍然不能授权。
+`agent.notes.search` 返回 `{items}`。每条是摘要：`id`、`title`、最多 120 字 `preview`、`updated_at`、`is_open`、位置、尺寸、`is_pinned`。没有正文。没有实现总数，响应里不放 `total`，也不填假数字。
 
-`sticky_note` 进入静态支持名单。目录字段仍是 `agent_supported`、`agent_allowed`、`agent_effective`，默认不允许。
+`commit_agent_update` 成功后仍 `begin_write_session`。这个游标只挡住旧的无会话自动保存。关闭的便笺即使 `has_write_session` 为 true，read/update 也直接走数据库 CAS，不握手。
 
-已广告并且只覆盖关闭、没有写入会话的便笺：
+只有窗口 `is_open` 才需要编辑器会话。会话来自该便笺窗口调用 `toolbox_agent_ui_ready`，标签必须是 `sticky-note-{id}`。窗口开着但还没注册时，read/update 返回 `UNAVAILABLE`，文案是 `open note editor is not synchronized yet`。已注册时，read/update 先发 `prepare`，原生再读库并做 `expected_updated_at` CAS。冲突不覆盖。成功后 `apply` 带已提交记录和新的 `write_session_id`，然后 `release`。`apply` 丢失或提交后取消时，库记录保留，`display_sync` 为 `pending`，结果不是 `CANCELLED`。关闭便笺成功时 `display_sync` 为 `closed`；已注册编辑器 apply 成功时为 `applied`。
 
-- `agent.notes.search` `{query?,limit?,offset?}`：查询最多 200 个 Unicode scalar，limit 1..20，offset 0..10000。返回 id、标题、最多 120 字预览、`updated_at` 和窗口状态，不返回正文。
-- `agent.notes.read` `{id}`：id 1..80 个非控制字符。正文超过 256KiB UTF-8 返回 `INVALID_REQUEST`，不截断。
-- `agent.notes.create` `{title,content_md?}`：标题 1..500 scalar，默认关闭，只插入一次。
-- `agent.notes.update` `{id,expected_updated_at,title?,content_md?}`：至少一个变更字段。安全整数 CAS。冲突码 `CONFLICT`，不覆盖。成功后轮换写入会话，旧的无会话自动保存不再落盘。响应 `display_sync:"closed"`。
-- `agent.notes.open` `{id}`：已打开则只聚焦，不改冲突令牌；关闭的便笺打开一次。
+人保存 `save_content` 使用单调冲突令牌。同一毫秒内的 flush 也会推进 `updated_at`，避免 CAS 把刚刷入的草稿当成未变化而覆盖。
 
-便笺正打开，或已有写入会话时，read/update 返回 `UNAVAILABLE`，文案是 open note editor is not synchronized yet。这是故意拒绝，不是已同步。
+## 人机握手
+
+只接受带真实窗口的 IPC。`invoke_ipc` 不带窗口时拒绝 `toolbox_agent_ui_ready` 和 `toolbox_agent_ui_result`。生产路径用 `window.label()`，不信参数里的 actor 或窗口名。
+
+`toolbox_agent_ui_ready`：`{kind:'notes', note_id}` 或 `{kind:'ink'}`。返回原生生成的 `{session_id}`。新 ready 替换旧会话。
+
+`toolbox_agent_ui_result`：`{kind, request_id, session_id, operation, ok, result?, error?}`。只接受错误码 `BUSY` 和 `CONFLICT`。窗口、会话、操作、重复或过晚的回执不提交，返回 `{acknowledged:false}`。
+
+原生只向对应窗口发事件，不广播。
+
+- `sticky://agent-command`：`{request_id, session_id, note_id, operation:'prepare'|'apply'|'release', record?, write_session_id?}`
+- `screen-ink://agent-command`：`{request_id, session_id, operation:'draw'|'snapshot'|'clear', strokes?, canvas_bounds:{x,y,width,height,scale_factor}}`
+
+等待在内核锁和主线程之外，默认最多 5 秒，并观察管道取消。`prepare` 失败或超时仍 `release`。
+
+## 画布与图像
+
+`agent.ink.draw`、`agent.ink.snapshot` 已进入数据方法和桌面能力。没有 ready 会话时返回 `UNAVAILABLE`，不假装画布已动。指针笔画进行中返回 `BUSY`。Agent 坐标是虚拟桌面物理像素，负原点有效；发给原画布的是按窗口边界和缩放过的逻辑点。draw 在 ack `{applied}` 之后返回 `{applied, revision}`，这里的 `revision` 是全局 access snapshot，不是产物 epoch。snapshot 只接受 ack 里的画布 PNG，校验签名、IHDR、解码尺寸和上限后再入库。clear 走同一握手。人的 `ink_clear_canvas` 没改。
+
+`agent.artifacts.read` 只在 `DESKTOP_CAPABILITIES`，不在 `agent.get_access` 的 methods。参数 `{artifact_id, module_id, offset, length}`，`length` 1..65536。响应 `{artifact_id, module_id, offset, total_bytes, mime_type, width, height, revision, data_base64, eof}`。`revision` 是该模块的 `agent_grant_epoch`。descriptor 带 `module_id` 和同一个 epoch。全局 `snapshot.revision` 仍是 `AppKernel::agent_revision`，两边不比较。撤回再授权后旧产物 epoch 不匹配，读返回 `UNAVAILABLE`。账本只在内存；重启后即使 PNG 文件还在也不能读。上限 16MiB、1600 万像素、TTL 15 分钟、合计 256MiB。
+
+提交点之后的取消不再把已成功的结果改成 `CANCELLED`。剪贴板写入、便笺 create/update CAS、产物入库都是提交点。测试钩子 `agent_flip_cancel_on_commit` 在提交后置位，返回值仍是 Ok。
 
 ## 测试
 
@@ -28,12 +45,13 @@
 . .\scripts\Use-ProjectEnvironment.ps1
 $env:CARGO_TARGET_DIR = 'D:\Code\dsh-toolbox\.worktrees\cursor\build\rust\cursor\target'
 $env:CARGO_BUILD_BUILD_DIR = 'D:\Code\dsh-toolbox\.worktrees\cursor\build\rust\cursor\intermediates'
-cargo test -p app-core --manifest-path .\native\YourAllIn1Helper\Cargo.toml --lib --offline --locked -j2 -- agent_access test_config_migration
 cargo test -p all-in-one-host --manifest-path .\native\YourAllIn1Helper\Cargo.toml --lib --offline --locked -j2 -- --test-threads=1 agent_api human_grant
 ```
 
-app-core 5 通过。宿主 `agent_api` 与 `human_grant` 共 9 通过。
+宿主 `agent_api` 与 `human_grant` 共 12 通过。覆盖：search 只有 `items`、关闭便笺 create→update→read→再次 update、人关闭后仍可读写且写入游标还在、未注册的打开窗口为 `UNAVAILABLE`、prepare flush 后 CAS 冲突且旧自动保存不覆盖、物理点 `(4,6)` 变成逻辑 `(2,3)`、重复 ack 不生效、分块 revision 等于授权 epoch、撤回再授权不能读旧产物、提交后取消仍保留剪贴板记录。
 
-## 下一阶段才算接通
+第一阶段 app-core 授权迁移 5 通过，记录在 `52d3070`，这次没有重跑。
 
-`toolbox_agent_ui_ready` / `toolbox_agent_ui_result`、`sticky://agent-command`、`screen-ink://agent-command`、图像分块和提交后取消语义都还没改。`agent.ink.draw` 与 `agent.ink.snapshot` 仍不广告。
+## 未测
+
+真实 OS 剪贴板、真实显示器、`RegisterHotKey`、WebView 像素和 GUI。CodeBuddy 需要在原窗口处理上述两个事件并回 `toolbox_agent_ui_result`。Node 继续用全局 snapshot revision 做发布期间不变校验，用产物 epoch 核验分块。
