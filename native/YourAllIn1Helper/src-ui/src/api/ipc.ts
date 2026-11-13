@@ -10,6 +10,19 @@ export interface IpcResponse<T = any> {
   error?: string;
 }
 
+export type IpcTransport = (cmd: string, args: Record<string, any>) => Promise<unknown>;
+
+let activeTransport: IpcTransport | undefined;
+
+/** Install the Client-side closed RPC adapter while the embedded dashboard is mounted. */
+export function setIpcTransport(transport?: IpcTransport): () => void {
+  const previous = activeTransport;
+  activeTransport = transport;
+  return () => {
+    if (activeTransport === transport) activeTransport = previous;
+  };
+}
+
 /** 剪贴板条目数据结构 */
 export interface ClipboardRecord {
   id: number;
@@ -281,6 +294,8 @@ export interface KernelStatus {
  * @returns 成功返回 data，失败抛出 Error
  */
 export async function invokeIpc<T = any>(cmd: string, args: Record<string, any> = {}): Promise<T> {
+  if (activeTransport) return await activeTransport(cmd, args) as T;
+
   let resPayload: IpcResponse<T>;
 
   // 检测是否运行在 Tauri 2.x 原生 WebView 容器中

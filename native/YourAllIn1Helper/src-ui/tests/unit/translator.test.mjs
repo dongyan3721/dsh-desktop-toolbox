@@ -159,6 +159,7 @@ test('Dashboard: legacy translator routes open a feature window while preference
   const featureSource = await readFile(new URL('../../src/utils/features.ts', import.meta.url), 'utf8');
   const context = vm.createContext({
     ref: value => ({ value }), onMounted: () => {}, onUnmounted: () => {}, console,
+    defineProps: () => ({}),
     t: key => key, syncLocaleFromBackendConfig: () => {},
     invokeIpc: async (cmd, args) => { calls.push({cmd, args}); return {}; },
   });

@@ -11,14 +11,19 @@
       <p v-if="error" class="launcher-error" role="alert">{{ error }}</p>
       <section v-if="page === 'features'" id="features-page" role="tabpanel" aria-labelledby="features-tab">
         <div class="page-heading"><h2>{{ t('desktop.yourTools') }}</h2><p>{{ t('desktop.featuresHint') }}</p></div>
-        <p v-if="!status" class="loading-text" role="status">{{ t('desktop.loading') }}</p>
-        <ModuleManager v-else :modules="status.module_catalog" :opening="opening" @changed="refreshDashboard" @open="openFeature" />
+        <div v-if="!status && !error" class="loading-text" role="status">{{ t('desktop.loading') }}</div>
+        <button v-else-if="!status" class="retry-button" @click="refreshDashboard">重试连接</button>
+        <ModuleManager v-if="status" :modules="status.module_catalog" :opening="opening" @changed="refreshDashboard" @open="openFeature" />
       </section>
-      <section v-else id="preferences-page" role="tabpanel" aria-labelledby="preferences-tab"><PreferencesPanel :status="status" @changed="refreshDashboard" /></section>
+      <section v-else id="preferences-page" role="tabpanel" aria-labelledby="preferences-tab">
+        <p v-if="embedded" class="native-shortcut-notice">快捷键录入需要原生窗口焦点。请打开独立主窗口，在“偏好设置”中录入快捷键。</p>
+        <PreferencesPanel :status="status" @changed="refreshDashboard" />
+      </section>
     </main>
     <footer class="launcher-footer">
       <button class="footer-link" @click="openManual">{{ t('desktop.manual') }} <span aria-hidden="true">↗</span></button>
-      <button class="footer-link quit" @click="shutdownDaemon">{{ t('app.quit') }}</button>
+      <button v-if="embedded" class="footer-link" @click="openNativeMain">打开独立主窗口</button>
+      <button v-else class="footer-link quit" @click="shutdownDaemon">{{ t('app.quit') }}</button>
     </footer>
   </div>
 </template>
@@ -30,6 +35,7 @@ import { featureForRoute } from '../utils/features';
 import ProductLogo from './ProductLogo.vue';
 import ModuleManager from './ModuleManager.vue';
 import PreferencesPanel from './PreferencesPanel.vue';
+const { embedded = false } = defineProps<{ embedded?: boolean }>();
 const page = ref('features');
 const status = ref<KernelStatus | null>(null);
 const opening = ref<string | null>(null);
@@ -63,6 +69,10 @@ async function applyDashboardRoute(route: string | null) {
 }
 async function openManual() {
   try { await invokeIpc('kernel_open_manual'); }
+  catch (err) { error.value = err instanceof Error ? err.message : String(err); }
+}
+async function openNativeMain() {
+  try { await invokeIpc('toolbox_open_native_main'); }
   catch (err) { error.value = err instanceof Error ? err.message : String(err); }
 }
 async function shutdownDaemon() {
@@ -100,6 +110,8 @@ onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer); unlistenNavig
 .quit:hover { color: var(--macos-danger); }
 .launcher-error { color: var(--macos-danger); font-size: 12px; margin-bottom: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .loading-text { color: var(--macos-text-secondary); padding: 30px 0; }
+.retry-button { border: 0; background: none; color: var(--macos-accent); padding: 8px 0; cursor: pointer; }
+.native-shortcut-notice { margin-bottom: 14px; padding: 10px 12px; color: var(--macos-text-secondary); background: var(--macos-bg-sidebar); border-radius: 7px; font-size: 12px; }
 button:focus-visible { outline: 2px solid var(--macos-accent); outline-offset: 5px; }
 @media (max-width: 500px) { .launcher-header { padding: 18px 18px 0; } .launcher-content { padding: 18px; } .launcher-footer { padding: 12px 18px; } }
 </style>
