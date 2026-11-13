@@ -54,13 +54,12 @@ pub fn webview_data_dir(app: &AppHandle) -> Option<std::path::PathBuf> {
 }
 
 pub fn run_plugin(launch: PluginLaunch) -> anyhow::Result<()> {
-    let isolation = prepare_plugin_runtime(&launch).map_err(anyhow::Error::msg)?;
-    apply_process_isolation(&isolation);
     let parent_exit = watch_parent(launch.parent_pid).map_err(anyhow::Error::msg)?;
     if *parent_exit.borrow() {
         return Err(anyhow::anyhow!("parent process is not running"));
     }
-    let lock = transport::InstanceLock::acquire(&isolation.data_dir).map_err(anyhow::Error::msg)?;
+    let (lock, isolation) = prepare_locked_runtime(&launch).map_err(anyhow::Error::msg)?;
+    apply_process_isolation(&isolation);
     let (ready_tx, _ready_rx) = watch::channel(false);
     PLUGIN
         .set(PluginRuntime {
@@ -73,6 +72,16 @@ pub fn run_plugin(launch: PluginLaunch) -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("plugin runtime was already installed"))?;
     crate::run();
     Ok(())
+}
+
+fn prepare_locked_runtime(
+    launch: &PluginLaunch,
+) -> Result<(transport::InstanceLock, PluginIsolation), String> {
+    // A losing second launch must not create or replace configuration before
+    // discovering that another desktop/headless kernel already owns the data.
+    let lock = transport::InstanceLock::acquire(&launch.data_dir)?;
+    let isolation = prepare_plugin_runtime(launch)?;
+    Ok((lock, isolation))
 }
 
 pub fn install_plugin_state(app: &AppHandle) -> Result<(), String> {
@@ -308,5 +317,29 @@ impl TauriDesktopControl {
             .map_err(|_| ControlError::new("INTERNAL", "desktop thread did not accept the command"))?;
         rx.recv()
             .map_err(|_| ControlError::new("INTERNAL", "desktop thread did not finish the command"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conflicting_launch_cannot_prepare_configuration_before_taking_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let launch = PluginLaunch {
+            pipe_name: "unused-in-preparation-test".into(),
+            instance_id: "11111111-1111-4111-8111-111111111111".into(),
+            data_dir: dir.path().to_path_buf(),
+            parent_pid: std::process::id(),
+        };
+        let first = transport::InstanceLock::acquire(dir.path()).unwrap();
+        assert!(prepare_locked_runtime(&launch).is_err());
+        assert!(!dir.path().join("config.json").exists());
+        assert!(!dir.path().join("webview").exists());
+        drop(first);
+        let (_lock, isolation) = prepare_locked_runtime(&launch).unwrap();
+        assert!(isolation.data_dir.join("config.json").is_file());
+        assert!(isolation.webview_data_dir.is_dir());
     }
 }
