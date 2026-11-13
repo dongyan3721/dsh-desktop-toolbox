@@ -5,6 +5,7 @@ import { isAbsolute, join } from 'node:path';
 import { NativeOwner, hostError } from '../host/native-owner.js';
 import { DesktopAgentAccess } from './agent-access.js';
 import { ToolboxArtifactService } from './artifacts.js';
+import { resolveDesktopDataDir } from './data-dir.js';
 
 export const DESKTOP_RUNTIME = Object.freeze({
   executable: 'win32-x64/all-in-one-desktop.exe',
@@ -19,7 +20,7 @@ export const DESKTOP_RUNTIME = Object.freeze({
 export const name = 'toolbox-desktop-runtime';
 export const inject = ['subprocess'];
 export const Config = Schema.object({
-  dataDir: Schema.string().required(),
+  dataDir: Schema.string().default(''),
   nativeExecutable: Schema.string().default(''),
   startupTimeoutMs: Schema.number().default(20000),
   requestTimeoutMs: Schema.number().default(5000),
@@ -31,12 +32,12 @@ const MODULES = new Set(['screenshot', 'clipboard', 'screen_ink', 'media_proc', 
 const REQUIRED_METHODS = ['status', 'desktop.show_main', 'desktop.open_panel', 'desktop.shutdown'];
 
 function normalizeConfig(config) {
-  if (!isAbsolute(config.dataDir)) throw hostError('INVALID_CONFIG', 'Desktop dataDir must be absolute');
+  const dataDir = resolveDesktopDataDir(config.dataDir);
   for (const field of ['startupTimeoutMs', 'requestTimeoutMs', 'cancelTimeoutMs', 'shutdownTimeoutMs']) {
     if (!Number.isSafeInteger(config[field]) || config[field] < 1 || config[field] > 2147483647) throw hostError('INVALID_CONFIG', `${field} must be a timer-safe positive integer`);
   }
   if (config.nativeExecutable && !isAbsolute(config.nativeExecutable)) throw hostError('INVALID_CONFIG', 'Desktop executable override must be absolute');
-  return { ...config, tempDir: join(config.dataDir, '.tmp'), readRoots: [], writeRoots: [] };
+  return { ...config, dataDir, tempDir: join(dataDir, '.tmp'), readRoots: [], writeRoots: [] };
 }
 
 /** Human runtime service; deliberately has no tools/Agent dependency or registration. */

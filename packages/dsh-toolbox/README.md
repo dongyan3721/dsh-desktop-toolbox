@@ -1,8 +1,8 @@
 # DSH Toolbox first beta
 
-beta.3 仅更新安装依赖声明与包版本，沿用 beta.2 的 JS/原生程序。rc.3 运行兼容性由使用者验证，本次未做安装、启动或功能兼容测试。
+beta.4 让桌面组件在没有 `DSH_HOME` 时自行使用用户目录下的绝对数据路径。原生程序沿用 beta.3。rc.3 运行兼容性仍由使用者验证，本次未做安装或启动测试。
 
-`0.1.0-beta.3`：Windows x64 原桌面工具箱迁移版。声明支持 Harness `0.2.2-rc.1` / `0.2.2-rc.3`、Cordis `4.1.0`、Node 24。与同版本 `dsh-toolbox-client` 一起安装，侧栏“工具箱”打开原 Tauri 主窗；人的操作无需模型请求。
+`0.1.0-beta.4`：Windows x64 原桌面工具箱迁移版。声明支持 Harness `0.2.2-rc.1` / `0.2.2-rc.3`、Cordis `4.1.0`、Node 24。与同版本 `dsh-toolbox-client` 一起安装，侧栏“工具箱”打开原 Tauri 主窗；人的操作无需模型请求。
 
 保留原十模块界面、窗口、托盘与快捷键。新配置只启用便笺；其他功能按需开启。功能启停与“允许 Agent 访问”独立，Agent 授权默认关闭。截图、剪贴板、屏幕注释、应用使用时长、便笺五项可在明确授权后与 Agent 共享同一桌面内核及数据。脚本、多媒体、窗口置顶、翻译、密码本不支持 Agent。
 
@@ -10,7 +10,7 @@ beta.3 仅更新安装依赖声明与包版本，沿用 beta.2 的 JS/原生程�
 
 默认 Bundle 是 `human.patch.yml`；包根和 `dsh-toolbox/desktop` 均导出同一桌面服务，`dsh-toolbox/agent` 只提供上述五项动态工具，`dsh-toolbox/human-entry` 提供人用入口。新版本不再提供旧 headless Agent 产品入口；历史 alpha 归档保持冻结，不要将旧显式 patch 用于新包。
 
-数据目录必须为绝对路径。Bundle 读取 `DSH_TOOLBOX_DATA_DIR`，否则使用 `DSH_HOME/toolbox-desktop-data`。构建、隔离测试和预览数据均位于 D 盘；原 C 盘项目只读，旧数据不会自动导入。运行无需 Rust 或原项目。原生文件使用 SHA-256 清单校验，无安装期编译脚本。
+数据目录必须为绝对路径。显式 `dataDir` 优先，其次是 `DSH_TOOLBOX_DATA_DIR`；两者都为空时用 `DSH_HOME/toolbox-desktop-data`。普通客户端未设置 `DSH_HOME` 时，桌面组件自己使用用户主目录下的 `.dsh/toolbox-desktop-data`。相对的显式目录会被拒绝。构建、隔离测试和预览数据均位于 D 盘；原 C 盘项目只读，旧数据不会自动导入。运行无需 Rust 或原项目。原生文件使用 SHA-256 清单校验，无安装期编译脚本。
 
 关闭主窗保留托盘与快捷键，再打开复用窗口。卸载停止自有进程并保留数据；无法确认保存或必须强制结束时报告失败。Windows 命令行升级前从“应用 → 退出”正常退出 Harness，避免运行中 exe 的文件锁。保留登录及数据目录后安装新包、重新打开。
 

@@ -1,8 +1,5 @@
 - insert:
     - id: toolbox-desktop
       name: dsh-toolbox/desktop
-      config:
-        dataDir: !!js >-
-          process.env.DSH_TOOLBOX_DATA_DIR || (process.env.DSH_HOME ? process.env.DSH_HOME + '/toolbox-desktop-data' : '')
     - id: toolbox-agent
       name: dsh-toolbox/agent
