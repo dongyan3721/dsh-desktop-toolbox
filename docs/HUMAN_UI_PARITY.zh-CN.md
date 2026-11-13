@@ -23,7 +23,7 @@
 | `screenshot:capture` | 区域截图 | `PrimaryMod+Alt+A` | `Ctrl + Alt + A` | 是 | 单元测试覆盖选区交互与遮罩 Fake (`capture-overlay.test.mjs`, `screenshot.test.mjs`) | 真实物理键待验 (Codex 独占) |
 | `screenshot:scroll` | 滚动长截图 | 未设置 | `未分配` | 是 | 无直接前端单测 (仅工具函数格式测试 `screenshot.test.mjs`) | 可由用户在偏好设置中录入自定义键 |
 | `screenshot:gif` | 录制 GIF | 未设置 | `未分配` | 是 | 选区交互 Fake 与格式工具函数 (`capture-overlay.test.mjs`, `screenshot.test.mjs`) | 可由用户在偏好设置中录入自定义键 |
-| `screenshot:ocr` | 屏幕 OCR | 未设置 | `未分配` | 是 | 覆盖 OCR 数据结构与解析工具函数 (`screenshot.test.mjs`) | 可由用户在偏好设置中录入自定义键 |
+| `screenshot:ocr` | 屏幕 OCR | 未设置 | `未分配` | 是 | 无直接前端 OCR 单测；截图选区/格式测试不等于 OCR 测试 | 可由用户在偏好设置中录入自定义键 |
 | `clipboard:toggle_popup` | 剪贴板快速粘贴浮窗 | `PrimaryMod+Alt+D` | `Ctrl + Alt + D` | 是 | 覆盖候选窗按键过滤/导航/粘贴 Fake (`clipboard-popup.test.mjs`, `launcher.test.mjs`) | 真实物理键待验 (Codex 独占) |
 | `screen_ink:toggle_session` | 屏幕画笔注释会话 | `PrimaryMod+Alt+Shift+B` | `Ctrl + Alt + Shift + B` | 是 | 仅覆盖工具栏撤销栈与激光笔 Fake (`ink.test.mjs`) | 真实物理键待验 (Codex 独占) |
 | `screen_ink:toggle_passthrough` | 注释鼠标穿透切换 | `PrimaryMod+Alt+Shift+S` | `Ctrl + Alt + Shift + S` | 是 | 无独立单测 (组件内通过 BroadcastChannel / IPC 调用) | 真实物理键待验 (Codex 独占) |
