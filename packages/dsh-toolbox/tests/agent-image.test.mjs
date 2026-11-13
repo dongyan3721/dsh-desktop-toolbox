@@ -6,6 +6,7 @@ import { apply } from '../src/agent/index.js'
 import {
   createAgentImagePublisher,
   MAX_AGENT_IMAGE_BYTES,
+  validateArtifactDescriptor,
 } from '../src/agent/image.js'
 
 const PNG_BYTES = new Uint8Array(Buffer.from(
@@ -223,6 +224,30 @@ test('native image descriptors are bounded before any transfer', async () => {
   assert.equal(reads, 0)
 })
 
+test('A3 image caps are exactly 16MiB and 16M pixels', () => {
+  const boundary = {
+    ...DESCRIPTOR,
+    byte_length: 1,
+    width: 4000,
+    height: 4000,
+  }
+  assert.deepEqual(validateArtifactDescriptor(boundary), {
+    artifact_id: 'artifact-1',
+    mime_type: 'image/png',
+    byte_length: 1,
+    width: 4000,
+    height: 4000,
+  })
+  assert.throws(
+    () => validateArtifactDescriptor({ ...boundary, width: 4001 }),
+    error => error.code === 'UNSUPPORTED',
+  )
+  assert.throws(
+    () => validateArtifactDescriptor({ ...boundary, byte_length: MAX_AGENT_IMAGE_BYTES + 1 }),
+    error => error.code === 'UNSUPPORTED',
+  )
+})
+
 test('artifact bytes must match the descriptor and image refs are sanitized', async () => {
   const publisher = createAgentImagePublisher({
     attachments: {
@@ -262,6 +287,47 @@ test('artifact bytes must match the descriptor and image refs are sanitized', as
   })
   assert.deepEqual(value.image, IMAGE_REF)
   assert.equal(Object.hasOwn(value.image, 'extra'), false)
+})
+
+test('a committed capture survives late cancellation as a truthful partial result', async () => {
+  const controller = new AbortController()
+  const tools = createTools()
+  let reads = 0
+  let saves = 0
+  const desktop = createDesktop(() => {
+    controller.abort()
+    return DESCRIPTOR
+  })
+  const registry = createAgentToolRegistry({
+    tools,
+    desktop,
+    imagePublisher: createAgentImagePublisher({
+      attachments: { async saveImage() { saves += 1; return IMAGE_REF } },
+      artifactReader: { async read() { reads += 1; return PNG_BYTES } },
+    }),
+  })
+  await registry.start(freshSignal())
+  const tool = tools.definitions.get('toolbox_screenshot')
+
+  const value = await tool.execute({
+    action: 'capture',
+    monitor_id: 0,
+    region: { x: 0, y: 0, width: 1, height: 1 },
+  }, { signal: controller.signal })
+
+  assert.deepEqual(value, {
+    artifact: DESCRIPTOR,
+    image: null,
+    publication: 'cancelled',
+  })
+  assert.equal(reads, 0)
+  assert.equal(saves, 0)
+  assert.equal(desktop.calls.length, 1, 'no automatic retry after late cancellation')
+  const content = tool.output.render({ action: 'capture' }, value)
+  assert.equal(content.length, 1)
+  assert.match(content[0].text, /已捕获/)
+  assert.equal(content.some(block => block.type === 'image'), false)
+  registry.dispose()
 })
 
 test('registry registers image actions only with a publisher and renders the real image block', async () => {
