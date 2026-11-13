@@ -76,8 +76,11 @@ const failed = ref(false);
 const checks = ref<Record<string, ShortcutCheckWire>>({});
 const checking = ref<Record<string, boolean>>({});
 const checkingAll = ref(false);
-const scanSummary = ref<{ count: number; issues: number } | null>(null);
-const probeUnavailable = ref(false);
+const scanCompleted = ref(false);
+const assignedChecks = computed(() => Object.values(checks.value).filter(check => check.status !== 'unassigned'));
+const probeUnavailable = computed(() => scanCompleted.value && assignedChecks.value.length > 0 && assignedChecks.value.every(check => check.status === 'not_checked'));
+const scanSummary = computed(() => !scanCompleted.value || probeUnavailable.value ? null
+  : { count: assignedChecks.value.length, issues: assignedChecks.value.filter(isBlocked).length });
 type PreferenceRow = ShortcutPreference & { diagnosis?: ShortcutDiagnosisWire | null };
 const generations: Record<string, number> = {};
 let changeEpoch = 0;
@@ -132,7 +135,7 @@ async function checkShortcut(actionId: string, hotkey: string | null): Promise<S
 }
 async function checkAllShortcuts() {
   const epoch = ++changeEpoch;
-  checkingAll.value = true; scanSummary.value = null; probeUnavailable.value = false;
+  checkingAll.value = true; scanCompleted.value = false;
   try {
     const result = await invokeIpc<{ checks: ShortcutCheckWire[] }>('kernel_check_shortcuts');
     const merged: Record<string, ShortcutCheckWire> = Object.fromEntries(result.checks.map(check => [check.action_id || '', check]));
@@ -142,9 +145,7 @@ async function checkAllShortcuts() {
     }
     if (!disposed && changeEpoch === epoch) {
       checks.value = merged;
-      const assigned = Object.values(merged).filter(check => check.status !== 'unassigned');
-      probeUnavailable.value = assigned.length > 0 && assigned.every(check => check.status === 'not_checked');
-      scanSummary.value = probeUnavailable.value ? null : { count: assigned.length, issues: assigned.filter(isBlocked).length };
+      scanCompleted.value = true;
     }
   } catch (err) { if (!disposed && changeEpoch === epoch) showError(err); }
   finally { checkingAll.value = false; }
@@ -173,7 +174,7 @@ function showError(err: unknown) {
 function acceptRecordedShortcut(hotkey: string) {
   const id = recording.value;
   if (!id || !hotkey) return;
-  ++changeEpoch; scanSummary.value = null; probeUnavailable.value = false; delete checks.value[id];
+  ++changeEpoch; scanCompleted.value = false; delete checks.value[id];
   draft.value[id] = hotkey;
   setRecording(null);
   if (typeof document !== 'undefined') (document.activeElement as HTMLElement | null)?.blur();
@@ -199,7 +200,7 @@ function recordShortcut(event: KeyboardEvent, shortcut: ShortcutPreference) {
 }
 async function saveShortcut(shortcut: ShortcutPreference, hotkey: string | null) {
   saving.value = shortcut.spec.action_id; notice.value = ''; failed.value = false;
-  ++changeEpoch; scanSummary.value = null; probeUnavailable.value = false;
+  ++changeEpoch; scanCompleted.value = false;
   try {
     const check = await checkShortcut(shortcut.spec.action_id, hotkey);
     if (isBlocked(check)) { notice.value = checkMessage(check, shortcut); failed.value = true; return; }

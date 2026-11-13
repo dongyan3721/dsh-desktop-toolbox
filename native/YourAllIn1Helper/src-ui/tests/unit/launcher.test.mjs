@@ -168,6 +168,18 @@ test('recheck sends the current draft and a host that never probes stays unavail
   assert.equal(run('scanSummary.value'), null);
 });
 
+test('individual recheck updates a completed scan summary after an OS conflict is released', async () => {
+  const { run } = await preferencesHarness(async (cmd, args) => cmd === 'kernel_check_shortcuts'
+    ? { checks: [{ action_id: 'clipboard:toggle_popup', status: 'os_unavailable' }] }
+    : { action_id: args.action_id, status: 'available' });
+  run(`shortcuts.value = [${JSON.stringify(row)}]`);
+  await run('checkAllShortcuts()');
+  assert.equal(run('scanSummary.value.issues'), 1);
+  await run('recheckShortcut(shortcuts.value[0])');
+  assert.equal(run('scanSummary.value.issues'), 0);
+  assert.equal(run('scanSummary.value.count'), 1);
+});
+
 
 test('feature captions follow configured platform labels and drop hints for unassigned keys', async () => {
   const source = await readFile(new URL('../../src/utils/actionShortcuts.ts', import.meta.url), 'utf8');

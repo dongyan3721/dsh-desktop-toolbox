@@ -42,7 +42,8 @@ public static class ToolboxBeta5Fixture {
    for(int i=40;i<data.Length;i+=4) { data[i]=20;data[i+1]=140;data[i+2]=240;data[i+3]=255; } Put(8,data);
  }
  public static void HoldKey() { if(!RegisterHotKey(owner,917,0x0002|0x0001|0x0004,0x79)) throw new Exception("synthetic key registration failed: "+Marshal.GetLastWin32Error()); }
- public static void ReleaseKey() { UnregisterHotKey(owner,917); }
+ public static void HoldScreenshotKey() { if(!RegisterHotKey(owner,918,0x0002|0x0001,0x41)) throw new Exception("screenshot test binding unavailable: "+Marshal.GetLastWin32Error()); }
+ public static void ReleaseKey() { UnregisterHotKey(owner,917); UnregisterHotKey(owner,918); }
  public static void Stop() { ReleaseKey(); DestroyWindow(owner); }
 }
 '@
@@ -60,6 +61,7 @@ try {
                     'text' { [ToolboxBeta5Fixture]::Text() }
                     'image' { [ToolboxBeta5Fixture]::Image() }
                     'hold-key' { [ToolboxBeta5Fixture]::HoldKey() }
+                    'hold-screenshot-key' { [ToolboxBeta5Fixture]::HoldScreenshotKey() }
                     'release-key' { [ToolboxBeta5Fixture]::ReleaseKey() }
                     'quit' { return }
                     default { throw 'Unknown fixture action' }
