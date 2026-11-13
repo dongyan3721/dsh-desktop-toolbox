@@ -5,6 +5,9 @@
   "private": true,
   "type": "module",
   "main": "./index.js",
+  "scripts": {
+    "build:client": "node ./build-client.mjs"
+  },
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",

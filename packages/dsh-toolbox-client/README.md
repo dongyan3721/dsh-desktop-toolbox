@@ -1,13 +1,9 @@
 # dsh-toolbox-client
 
-Beta.4 keeps the beta.3 dependency declarations and native payload. The matching Host now defaults its desktop data directory when DSH_HOME is unset. Runtime compatibility with DSH 0.2.2-rc.3 remains untested in this release.
+The beta.5 Client panel mounts the original Vue Dashboard inside the Harness main-content slot. Module cards, enablement and the independent Agent grant switches are reused from the desktop UI; opening a feature still delegates to the original native panel. Mounting the Harness panel does not open the separate native main window.
 
-Human-visible DeepSeek Harness entry for DSH Toolbox, verified on 0.2.2-rc.1 in Web and packaged Electron.
+Before packing, run `npm --prefix packages/dsh-toolbox-client run build:client`. It builds the Dashboard with the workspace Vue toolchain and inlines its JS/CSS into `client.js`. This keeps the package self-contained and avoids relying on an unverified static-asset URL. The Dashboard is mounted in a Shadow DOM; its theme is scoped to the embedded container and does not change Harness document styles. Shortcut preferences remain visible, but recording is explicitly directed to the native window because it requires native WebView focus.
 
-Install this package and the matching dsh-toolbox version together. It declares dsh.client and exports ./client, a browser bundle that registers the 工具箱 sidebar entry and matching main panel. Clicking it opens the original Tauri toolbox window; it needs no model request and registers no model tool.
+The Client uses the existing `/api` Connection RPC carrier. Besides existing `status`, `showMain` and `openPanel` endpoints, beta.5 requires the Host-owned closed `toolbox-human/console` route and its actions (`snapshot`, module/grant changes, shortcut preferences/check/update, general preferences and manual opening). This Client change does not implement that Host/native service contract; it must be integrated by Codex before the console is operational.
 
-The Host entry re-exports dsh-toolbox/human-entry. It consumes the independent toolboxDesktop service and registers three authenticated Connection exact Fetch routes at /api/toolbox-human/{status,showMain,openPanel}. The browser uses Connection RPC framing and correlation over these routes. The shared carrier retains authentication, Host/Origin checks, owner admission and disconnect cancellation. No core patch or separate HTTP listener is required.
-
-The earlier generic /toolbox-human channel was replaced after real profile testing found a provider-shadow-context registration failure in this installed SDK. The independent-provider SDK regression covers the supported exact-route composition and disposal.
-
-This is local beta 0.1.0-beta.4. The matching Host supports five separately granted Agent modules; this Client remains a human entry and grants no Agent access. See workspace docs/BETA1_ACCEPTANCE.zh-CN.md for measured scope and remaining manual credential, compatibility, data migration and license checks.
+The repository's vendored Harness reference and frontend test snapshot are `0.2.2-rc.1`. The installed Harness is user-reported as `0.2.2-rc.3`; this worktree has not verified the new embedded bundle in that installed runtime or a GUI session. The package version/peer range remains beta.4 pending coordinated beta.5 integration.

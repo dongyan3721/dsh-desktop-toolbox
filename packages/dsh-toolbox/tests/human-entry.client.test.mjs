@@ -12,6 +12,7 @@ function createFakeReact() {
 
   return {
     __state: state,
+    __refs: refs,
     __effects: effects,
     __reset() {
       index = 0
@@ -53,6 +54,8 @@ async function loadClientBundle() {
   const source = await readFile(clientBundleUrl, 'utf8')
   let registration
   const fakeWindow = {
+    localStorage: { getItem: () => null, setItem() {} },
+    matchMedia: () => ({ matches: false, addEventListener() {} }),
     __ModuleLoader__: {
       load(value) {
         registration = value
@@ -60,7 +63,7 @@ async function loadClientBundle() {
     },
   }
   // The bundle is a loader registration file, not an ESM module.
-  new Function('window', source)(fakeWindow)
+  new Function('window', 'localStorage', source)(fakeWindow, fakeWindow.localStorage)
   assert.ok(registration, 'bundle must register with __ModuleLoader__')
 
   const react = createFakeReact()
@@ -118,29 +121,6 @@ function createDeferredSlots() {
   }
 }
 
-function collectText(node) {
-  if (node === null || node === undefined || typeof node === 'boolean') return ''
-  if (typeof node === 'string' || typeof node === 'number') return String(node)
-  if (Array.isArray(node)) return node.map(collectText).join('')
-  const children = node.props?.children
-  return collectText(children)
-}
-
-async function renderPanel(connection) {
-  const { moduleExports, react } = await loadClientBundle()
-  const { registrations, slots } = createSlots()
-  moduleExports.apply({ slots, connection })
-  const panel = registrations.find(entry => entry.options.name === 'main').component
-
-  react.__reset()
-  panel({ connection })
-  react.__effects[0]()
-  await new Promise(resolve => setImmediate(resolve))
-  react.__reset()
-  const tree = panel({ connection })
-  return { react, tree, text: collectText(tree) }
-}
-
 test('client package manifest exposes a loadable web client half', async () => {
   const packageUrl = new URL('../../dsh-toolbox-client/package.json', import.meta.url)
   const manifest = JSON.parse(await readFile(packageUrl, 'utf8'))
@@ -193,7 +173,7 @@ test('client apply registers one sidebar icon and one matching main panel', asyn
   assert.equal(icon.props.width, 16)
 })
 
-test('initial main panel calls showMain without a model request', async () => {
+test('mounting the Harness panel does not call showMain', async () => {
   const { moduleExports, react } = await loadClientBundle()
   const { registrations, slots } = createSlots()
   const calls = []
@@ -209,96 +189,13 @@ test('initial main panel calls showMain without a model request', async () => {
   const panel = registrations.find(entry => entry.options.name === 'main').component
 
   react.__reset()
-  panel({ connection })
+  const tree = panel({ connection })
   assert.equal(calls.length, 0, 'effect must not run during render')
+  assert.equal(tree.type, 'div')
+  assert.equal(tree.props.className, 'dsh-toolbox-embedded')
 
-  const cleanup = react.__effects[0]()
-  await new Promise(resolve => setImmediate(resolve))
-
-  assert.equal(calls.length, 1)
-  assert.equal(calls[0].channel, '/api')
-  assert.equal(calls[0].endpoint, 'toolbox-human/showMain')
-  assert.deepEqual(calls[0].payload, {})
-  assert.ok(calls[0].signal instanceof AbortSignal)
-  assert.equal(react.__state[0].kind, 'opened')
-  if (typeof cleanup === 'function') cleanup()
-})
-
-test('main panel shows concise Chinese advice and keeps debug data in the error object', async () => {
-  const connection = {
-    rpc: {
-      async call() {
-        return {
-          ok: false,
-          error: {
-            code: 'DEPENDENCY_MISSING',
-            message: 'toolboxDesktop service is not available',
-            details: { causeCode: 'MISSING_SERVICE' },
-          },
-        }
-      },
-    },
-  }
-  const { react, text } = await renderPanel(connection)
-
-  const state = react.__state[0]
-  assert.equal(state.kind, 'error')
-  assert.ok(state.error instanceof Error)
-  assert.equal(state.error.code, 'DEPENDENCY_MISSING')
-  assert.equal(state.error.message, 'toolboxDesktop service is not available')
-  assert.deepEqual(state.error.details, { causeCode: 'MISSING_SERVICE' })
-
-  assert.match(text, /桌面服务尚未就绪/)
-  assert.equal(text.includes('DEPENDENCY_MISSING'), false)
-  assert.equal(text.includes('toolboxDesktop'), false)
-  assert.equal(text.includes('本页面不发起模型请求'), false)
-})
-
-test('human error codes map to actionable Chinese without leaking protocol text', async () => {
-  const cases = [
-    ['NATIVE_UNAVAILABLE', /桌面工具箱当前不可用/],
-    ['NATIVE_START_FAILED', /启动失败/],
-    ['NATIVE_START_TIMEOUT', /启动超时/],
-    ['NATIVE_INTEGRITY', /程序校验失败/],
-    ['DESKTOP_PROTOCOL', /版本不匹配/],
-    ['DESKTOP_CAPABILITIES', /缺少必要功能/],
-    ['DESKTOP_SHUTDOWN_FAILED', /上次关闭未完成/],
-    ['OUTCOME_UNKNOWN', /操作结果未确认/],
-    ['INTERNAL', /出现异常/],
-  ]
-
-  for (const [code, expected] of cases) {
-    const connection = {
-      rpc: {
-        async call() {
-          return {
-            ok: false,
-            error: { code, message: `English internal detail for ${code}`, details: {} },
-          }
-        },
-      },
-    }
-    const { text } = await renderPanel(connection)
-    assert.match(text, expected)
-    assert.equal(text.includes(code), false, `${code} must not appear in visible text`)
-    assert.equal(text.includes('English internal detail'), false)
-  }
-})
-
-test('a success value without opened:true is shown as an error, never as opened', async () => {
-  const connection = {
-    rpc: {
-      async call() {
-        return { ok: true, value: { opened: false } }
-      },
-    },
-  }
-  const { react, text } = await renderPanel(connection)
-
-  assert.equal(react.__state[0].kind, 'error')
-  assert.equal(react.__state[0].error.code, 'INTERNAL')
-  assert.equal(text.includes('已打开'), false)
-  assert.match(text, /出现异常/)
+  react.__effects[0]()
+  assert.equal(calls.length, 0, 'mounting the embedded view must not show the native window')
 })
 
 test('apply waits for slot declarations instead of registering early', async () => {
@@ -394,6 +291,18 @@ test('callHumanEntry rejects invalid envelopes and aborted calls', async () => {
     moduleExports.callHumanEntry(aborting, 'status', {}, controller.signal),
     { name: 'AbortError' },
   )
+})
+
+test('client bundle carries the original dashboard instead of a status-only placeholder', async () => {
+  const source = await readFile(clientBundleUrl, 'utf8')
+  assert.match(source, /mountEmbeddedDashboard/)
+  assert.match(source, /快捷键录入需要原生窗口焦点/)
+  assert.match(source, /setAgentAccess/)
+  assert.match(source, /attachShadow/)
+  assert.doesNotMatch(source, /logo\.svg/)
+  assert.doesNotMatch(source, /require\(['"](?:node:|fs|path|child_process|vue)/)
+  assert.doesNotMatch(source, /process\.env/)
+  assert.doesNotMatch(source, /callHumanEntry\(connection,\s*['"]showMain['"]/)
 })
 
 function freshSignal() {
