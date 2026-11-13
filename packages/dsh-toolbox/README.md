@@ -1,17 +1,15 @@
-# DSH Toolbox alpha
+# DSH Toolbox human preview
 
-Windows x64 本地工具箱：真实状态、便笺创建/搜索/更新。图片转换只在显式启用、配置允许的读写根且原生 ready capabilities 支持时注册。本阶段不创建桌面便笺窗口，不采集剪贴板、窗口标题或截图，不读取旧数据库。
+Windows x64 原桌面工具箱的人用迁移预览。兼容 Harness `0.2.2-rc.1`、Cordis `4.1.0`、Node 24。
 
-兼容基线：Harness `0.2.2-rc.1`、Cordis `4.1.0`、Node 24。
-发布入口是 `lib/index.js`，Bundle 为 `cordis.patch.yml`。
-本包没有安装期脚本。构建、安装与运行验收记录位于工作区 `docs/`。
+`0.1.0-alpha.3` 默认 Bundle `human.patch.yml` 启动原 Tauri 桌面，提供 `toolboxDesktop` 服务；另安装同版本 `dsh-toolbox-client`，在 Harness 侧栏显示“工具箱”。点击入口打开原主窗，便笺、偏好与原快捷键控件复用原程序。默认人用装配不注册模型工具，不需要模型请求。
 
-H1 开发中：`dsh-toolbox/desktop` 提供独立于模型工具的 `toolboxDesktop` 服务，`dsh-toolbox/human-entry` 为可见入口提供窄 RPC 适配。`human.patch.yml` 是单独的人用装配草案，需另装 `dsh-toolbox-client`。当前默认 Bundle 仍是已验证的 headless alpha.2；冻结的 alpha.2 包不包含新桌面实现。桌面构建使用工作区 `scripts/Build-Desktop.ps1`，不自动启动、安装或覆盖旧发布包。真实窗口、保存和快捷键验收完成后再切换发布默认入口。
+新配置仅启用便笺，其默认快捷键仍为未分配；其他模块保留原界面与默认键定义，需用户按计划启用和验收。脚本、密码本和使用时间无需开放给 Agent。旧项目数据不自动导入；没有读取旧数据库、开启自启动、运行更新器或填充演示数据。
 
-配置必须指定绝对 dataDir，Bundle 默认使用 DSH_TOOLBOX_DATA_DIR 或 DSH_HOME 下的 toolbox-data。开发/验收时请将 DSH_HOME 指向 D 盘隔离目录。原生程序默认从本包 resources 中加载并校验 SHA-256；nativeExecutable 仅供可信部署显式覆盖，不是模型工具参数。
+配置必须指定绝对 `dataDir`。人用 Bundle 默认读取 `DSH_TOOLBOX_DATA_DIR`，否则使用 `DSH_HOME/toolbox-desktop-data`。开发验收把 `DSH_HOME` 和 Electron 用户目录放在 D 盘隔离目录。桌面程序、WebView、日志和临时文件归该目录；当前实现拒绝 AppData 内的数据目录。原生文件使用独立 SHA-256 清单校验；`nativeExecutable` 仅供可信部署显式覆盖。
 
-启动依赖宿主的 tools/subprocess 服务。图片额外需要同一执行世界的 fs 服务、enableImages:true、readRoots 和 writeRoots；输出必须同时满足宿主当前文件策略与原生路径检查。不会覆盖已有文件。跨进程写操作出现 OUTCOME_UNKNOWN 时应先查询实际数据，不自动重试。宿主外层也可能在原生写入已提交后报告调用被取消，取消不等于回滚；重试前应先查询结果。
+`dsh-toolbox/desktop` 为独立桌面服务；`dsh-toolbox/human-entry` 为可见入口的窄 RPC 适配。卸载会等待便笺保存、停止自己拥有的进程并保留数据目录。无法确认保存或必须强制终止时返回明确失败。关闭主窗保留托盘与快捷键；再次打开复用窗口。
 
-卸载会停止新调用、处理在途任务、请求原生关停并等待受管理进程范围退出；保留数据目录供重新安装使用。未提供密码本、截图遮罩或其他桌面模块。外部发布前需要完成完整的第三方许可清单审计；当前产物供本机隔离验收。
+旧 headless 入口仍在包根 `lib/index.js` 和显式 `cordis.patch.yml`，供已验证的便笺/图片 Agent 能力单独选择。不要让两种内核运行在同一数据目录。图片能力仍需显式启用、读写根、宿主文件策略与原生 capability；`OUTCOME_UNKNOWN` 后先核查实际结果，不自动重试。
 
-图片输出需要支持硬链接的文件系统，临时文件与输出位于同一目录。路径检查解析已有 junction/symlink，但不防御同一用户在检查后恶意替换目录；配置的根目录应由可信用户控制。当前客户端最多跟踪 32 个在途请求，原生端串行执行并允许 16 个排队请求。
+没有安装期脚本。工作区 `scripts/Build-Package.ps1` 构建两个本地包并拒绝覆盖同版本归档。冻结 alpha.2 包不含新桌面功能。该版本是本机集成预览；完整十模块、凭据人工验收、旧数据导入及第三方许可审计仍按迁移计划推进。实际已测范围见工作区 `docs/`，源码保留不等于 GUI 已验收。
