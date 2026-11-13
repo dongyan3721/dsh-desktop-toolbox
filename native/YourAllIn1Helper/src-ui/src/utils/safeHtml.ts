@@ -83,8 +83,11 @@ const NAMED_ENTITIES: Record<string, string> = {
 
 function decodeEntities(value: string): string {
   return value.replace(/&(?:#x([0-9a-fA-F]+)|#(\d+)|([a-zA-Z]+));?/g, (match, hex, dec, named) => {
-    if (hex) return String.fromCodePoint(parseInt(hex, 16));
-    if (dec) return String.fromCodePoint(parseInt(dec, 10));
+    if (hex || dec) {
+      const point = hex ? parseInt(hex, 16) : parseInt(dec, 10);
+      return Number.isSafeInteger(point) && point > 0 && point <= 0x10ffff && !(point >= 0xd800 && point <= 0xdfff)
+        ? String.fromCodePoint(point) : '\ufffd';
+    }
     const key = String(named).toLowerCase();
     return Object.prototype.hasOwnProperty.call(NAMED_ENTITIES, key) ? NAMED_ENTITIES[key] : match;
   });

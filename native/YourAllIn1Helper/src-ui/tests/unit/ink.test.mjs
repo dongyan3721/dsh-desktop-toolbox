@@ -320,15 +320,15 @@ test('agent draw appends to the shared history and undo stack and acknowledges a
   assert.equal(h.run('historyManager.canRedo()'), true);
 });
 
-test('physical desktop strokes are transformed via canvas bounds and DPI into logical canvas space', async () => {
+test('native-normalized logical strokes are not scaled twice on a negative-origin HiDPI canvas', async () => {
   const h = await loadInkCanvas();
   await h.hooks.mounted[0]();
   await h.dispatchAgent({
     request_id: 'd2', session_id: 'ink-session-1', operation: 'draw',
     canvas_bounds: { x: -1600, y: 0, width: 1600, height: 1200, scale_factor: 2 },
-    strokes: [{ points: [{ x: -1596, y: 4 }], color: '#112233', width: 4 }],
+    strokes: [{ points: [{ x: 2, y: 2 }], color: '#112233', width: 2 }],
   });
-  // 逻辑画布 800×600；物理 (-1596,4) → 逻辑 (2,2)，线宽 4 → 2
+  // 原生已将物理 (-1596,4)、线宽4转换为逻辑(2,2)、线宽2。
   assert.equal(h.run('historyManager.strokes[0].points[0].x'), 2);
   assert.equal(h.run('historyManager.strokes[0].points[0].y'), 2);
   assert.equal(h.run('historyManager.strokes[0].width'), 2);
