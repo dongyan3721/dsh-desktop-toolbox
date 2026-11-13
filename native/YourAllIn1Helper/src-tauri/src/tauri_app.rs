@@ -1098,6 +1098,7 @@ fn start_clipboard_listener(app: &AppHandle) {
         let mut clipboard: Option<arboard::Clipboard> = None;
         let mut last_text: Option<String> = None;
         let mut last_image_hash: Option<String> = None;
+        let mut last_sequence = 0;
         loop {
             std::thread::sleep(std::time::Duration::from_millis(250));
             let result = host.kernel().registry().with_enabled("clipboard", || {
@@ -1109,6 +1110,7 @@ fn start_clipboard_listener(app: &AppHandle) {
                     let mut opened = arboard::Clipboard::new().map_err(to_core_error)?;
                     last_text = opened.get_text().ok();
                     last_image_hash = None;
+                    last_sequence = os_hal::clipboard_owner_snapshot().sequence;
                     clipboard = Some(opened);
                     return Ok(());
                 }
@@ -1116,11 +1118,13 @@ fn start_clipboard_listener(app: &AppHandle) {
                 // 通道一：优先检查系统剪贴板文本变更
                 let text_before = os_hal::clipboard_owner_snapshot();
                 match clipboard.get_text() {
-                    Ok(text) if !text.trim().is_empty() && Some(&text) != last_text.as_ref() => {
+                    Ok(text) if !text.trim().is_empty() && (Some(&text) != last_text.as_ref()
+                        || (text_before.sequence != 0 && text_before.sequence != last_sequence)) => {
                         // 敏感内容（带 Windows 排除历史标记 / macOS ConcealedType）绝不收录进历史；
                         // 秘密写入方还须持有屏蔽租约，两层防护见 os_hal::secure 契约文档。
                         if os_hal::clipboard_content_is_concealed() {
                             last_text = Some(text);
+                            last_sequence = text_before.sequence;
                             return Ok(());
                         }
                         let text_after = os_hal::clipboard_owner_snapshot();
@@ -1137,6 +1141,7 @@ fn start_clipboard_listener(app: &AppHandle) {
                             emit_update(&app_handle);
                         }
                         last_text = Some(text);
+                        last_sequence = text_after.sequence;
                         last_image_hash = None;
                         return Ok(());
                     }
@@ -1149,10 +1154,12 @@ fn start_clipboard_listener(app: &AppHandle) {
                         if let Ok(image) = clipboard.get_image() {
                             let img_hash =
                                 mod_clipboard::ClipboardModule::compute_hash("image", &image.bytes);
-                            if Some(&img_hash) != last_image_hash.as_ref() {
+                            if Some(&img_hash) != last_image_hash.as_ref()
+                                || (image_before.sequence != 0 && image_before.sequence != last_sequence) {
                                 // 敏感内容（带排除历史标记）不收录进剪贴板历史。
                                 if os_hal::clipboard_content_is_concealed() {
                                     last_image_hash = Some(img_hash);
+                                    last_sequence = image_before.sequence;
                                     return Ok(());
                                 }
                                 let image_after = os_hal::clipboard_owner_snapshot();
@@ -1174,6 +1181,7 @@ fn start_clipboard_listener(app: &AppHandle) {
                                     emit_update(&app_handle);
                                 }
                                 last_image_hash = Some(img_hash);
+                                last_sequence = image_after.sequence;
                                 last_text = None;
                             }
                         }
@@ -1185,6 +1193,7 @@ fn start_clipboard_listener(app: &AppHandle) {
                 clipboard = None;
                 last_text = None;
                 last_image_hash = None;
+                last_sequence = 0;
             }
         }
     });
