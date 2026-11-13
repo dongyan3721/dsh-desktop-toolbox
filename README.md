@@ -2,12 +2,13 @@
 
 将 `C:\Users\xcxix\PyCharmProjects\YourAllIn1Helper` 迁移为 DeepSeek Harness 插件。
 
-产品主线是**供人日常使用的工具箱**：保留原界面、操作与快捷键。下一轮 A2 将功能启停与 Agent 授权拆为双开关；仅截图、剪贴板、屏幕注释、应用使用时长支持授权共享，其他六项明确不支持 Agent。新授权默认关闭。当前人用预览 `0.1.0-alpha.6` 已在官方 Web 和已登录 Electron 中验证侧栏入口、原 Tauri 主窗、便笺及临时全局键；A2 尚待实现，其余模块与旧数据导入继续按 H2/H3 验收。
+产品主线是**供人日常使用的工具箱**：保留原界面、操作与快捷键。A2 将功能启停与 Agent 授权拆为双开关；最新支持名单为截图、剪贴板、屏幕注释、应用使用时长、便笺五项，其他五项不支持 Agent。新授权默认关闭。当前人用预览 `0.1.0-alpha.6` 已在官方 Web 和已登录 Electron 中验证侧栏入口、原 Tauri 主窗、便笺及临时全局键；三位的前轮四模块 A2 代码已交付、尚未集成，便笺及共享接线仍待补齐，其余人用模块与旧数据导入继续按 H2/H3 验收。
 
 - [迁移计划](docs/MIGRATION_PLAN.zh-CN.md)：架构、十个模块的迁移范围、阶段安排、数据与发布验收。
 - [人用优先实施计划](docs/HUMAN_FIRST_PLAN.zh-CN.md)：最新优先级、原快捷键对等清单和下一阶段人用闭环。
 - [双开关与 Agent 共享计划](docs/AGENT_ACCESS_PLAN.zh-CN.md)：用户最新支持名单、三位 Agent 的 A2 任务及集成门槛；[共享契约](docs/A2_CONTRACT.md)。
 - [A2 实际派工记录](docs/A2_COORDINATION.zh-CN.md)：原会话发送状态、同步基线和 Codex 集成顺序。
+- [A2 交付复核与下一步](docs/A2_NEXT_PHASE.zh-CN.md)：141 项复跑结果、加入便笺后的五项范围、现有接线缺口、集成顺序和下一轮分工建议。
 - [H1 派工与进展](docs/H1_COORDINATION.zh-CN.md)：三位本机 Agent 的当前任务、边界和实际验证状态。
 - [勘察基线](docs/BASELINE.zh-CN.md)：本次实际检查结果、版本和待核对项。
 - [派工与验证记录](docs/COORDINATION.zh-CN.md)：三个本机 agent 的任务、已完成的样例验证和剩余工作。
