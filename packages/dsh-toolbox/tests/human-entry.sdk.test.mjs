@@ -3,6 +3,9 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { installConnection } from '../../../vendor/harness-reference/@deepseek-ai/dsh-client-connection/lib/client.node.js'
 import { createHumanEntryHandler } from '../src/human-entry/host.js'
+import * as HumanEntry from '../src/human-entry/host.js'
+import { Context } from '@deepseek-ai/cordis'
+import { HostConnectionService } from '../../../vendor/harness-reference/@deepseek-ai/dsh-client-connection/lib/index.js'
 
 /**
  * Integration tests against the actual installed 0.2.2-rc.1 Node Client
@@ -12,6 +15,26 @@ import { createHumanEntryHandler } from '../src/human-entry/host.js'
  */
 
 const clientBundleUrl = new URL('../../dsh-toolbox-client/client.js', import.meta.url)
+
+test('actual Host Connection registers and releases the RPC route in a strict Cordis plugin fiber', async () => {
+  const ctx = new Context()
+  const routes = new Set()
+  try {
+    ctx.provide('webServer', {
+      register(route) {
+        routes.add(route)
+        return () => routes.delete(route)
+      },
+    })
+    new HostConnectionService(ctx, [], {})
+    const fiber = await ctx.plugin(HumanEntry)
+    await fiber.await()
+    assert.equal(routes.size, 1)
+    assert.equal([...routes][0].path, '/toolbox-human')
+    await fiber.dispose()
+    assert.equal(routes.size, 0)
+  } finally { await ctx.fiber.dispose() }
+})
 
 async function loadClientBundle() {
   const source = await readFile(clientBundleUrl, 'utf8')

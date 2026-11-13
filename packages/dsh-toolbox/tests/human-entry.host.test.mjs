@@ -34,7 +34,7 @@ function createDesktop(overrides = {}) {
 
 test('human-entry host adapter exposes its channel and required services', () => {
   assert.equal(name, 'dsh-toolbox-human-entry')
-  assert.deepEqual(inject, ['connection'])
+  assert.deepEqual(inject, ['connection', 'webServer'])
   assert.equal(HUMAN_ENTRY_CHANNEL, '/toolbox-human')
 })
 

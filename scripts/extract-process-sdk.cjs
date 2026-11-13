@@ -27,5 +27,7 @@ function extract(name) {
     if (fs.existsSync(path.join(base, peer, 'package.json'))) extract(peer);
   }
 }
-for (const name of ['@deepseek-ai/dsh-subprocess', '@deepseek-ai/dsh-subprocess-local', '@deepseek-ai/dsh-fs', '@deepseek-ai/dsh-fs-local', '@deepseek-ai/dsh-sandbox', '@deepseek-ai/dsh-fs-sandbox', '@deepseek-ai/dsh-sandbox-policy']) extract(name);
+const additional = process.argv.slice(2);
+if (additional.some(name => !/^@deepseek-ai\/[a-z0-9-]+$/.test(name))) throw new Error('Invalid additional SDK package');
+for (const name of ['@deepseek-ai/dsh-subprocess', '@deepseek-ai/dsh-subprocess-local', '@deepseek-ai/dsh-fs', '@deepseek-ai/dsh-fs-local', '@deepseek-ai/dsh-sandbox', '@deepseek-ai/dsh-fs-sandbox', '@deepseek-ai/dsh-sandbox-policy', ...additional]) extract(name);
 console.log(`Verified ${visited.size} process/filesystem SDK packages in ${destinationRoot}`);

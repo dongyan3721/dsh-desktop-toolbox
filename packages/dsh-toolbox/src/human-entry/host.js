@@ -8,7 +8,8 @@
  */
 
 export const name = 'dsh-toolbox-human-entry'
-export const inject = ['connection']
+// Connection's scoped rpc.handle() registers through the caller's webServer.
+export const inject = ['connection', 'webServer']
 
 /** Generic Connection RPC channel shared with the browser client bundle. */
 export const HUMAN_ENTRY_CHANNEL = '/toolbox-human'
