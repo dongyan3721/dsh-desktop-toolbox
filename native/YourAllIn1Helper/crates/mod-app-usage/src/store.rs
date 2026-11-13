@@ -245,6 +245,22 @@ pub fn list_tracked_apps(ctx: &ModuleContext) -> CoreResult<Vec<TrackedApp>> {
     })
 }
 
+pub fn ensure_bounded_range(
+    start: &str,
+    end: &str,
+    max_days: usize,
+) -> CoreResult<()> {
+    let start = parse_date(start)?;
+    let end = parse_date(end)?;
+    let dates = enumerate_dates(start, end)?;
+    if dates.len() > max_days {
+        return Err(CoreError::Config(format!(
+            "date range exceeds {max_days} days"
+        )));
+    }
+    Ok(())
+}
+
 fn parse_date(raw: &str) -> CoreResult<NaiveDate> {
     NaiveDate::parse_from_str(raw.trim(), "%Y-%m-%d")
         .map_err(|_| CoreError::Config(format!("Invalid date '{raw}', expected YYYY-MM-DD")))

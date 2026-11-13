@@ -116,7 +116,31 @@ impl ClipboardModule {
         if !enabled || text.trim().is_empty() {
             return Ok(None);
         }
+        self.store_text_item(ctx, text, source_app_name, max_items)
+    }
 
+    /// Records an explicit text write in the same history table.
+    /// Unlike capture, this does not consult the listener switch or a suppression lease.
+    pub fn record_explicit_text(
+        &self,
+        ctx: &ModuleContext,
+        text: &str,
+    ) -> CoreResult<ClipboardRecord> {
+        if text.is_empty() {
+            return Err(CoreError::Config("clipboard text is empty".into()));
+        }
+        let max_items = ctx.config.read().clipboard.max_history_items.max(1);
+        self.store_text_item(ctx, text, Some("agent"), max_items)?
+            .ok_or_else(|| CoreError::Config("clipboard history did not record the text".into()))
+    }
+
+    fn store_text_item(
+        &self,
+        ctx: &ModuleContext,
+        text: &str,
+        source_app_name: Option<&str>,
+        max_items: usize,
+    ) -> CoreResult<Option<ClipboardRecord>> {
         let content_hash = Self::compute_hash("text", text.as_bytes());
         let now = Utc::now().timestamp_millis();
 
