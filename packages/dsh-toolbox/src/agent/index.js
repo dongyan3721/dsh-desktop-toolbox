@@ -9,9 +9,24 @@
  */
 
 import { createAgentToolRegistry } from './registry.js'
+import { createAgentImagePublisher } from './image.js'
 
 export const name = 'dsh-toolbox-agent-tools'
 export const inject = ['tools']
+
+function resolveImagePublisher(ctx) {
+  const get = typeof ctx.get === 'function' ? name => ctx.get(name) : name => ctx[name]
+  const provided = get('toolboxAgentImages')
+  if (provided !== undefined) return provided
+  const attachments = get('attachments')
+  const artifacts = get('toolboxArtifacts')
+  if (attachments === undefined || artifacts === undefined) return undefined
+  try {
+    return createAgentImagePublisher({ attachments, artifactReader: artifacts })
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * Create the dynamic registry for the injected toolboxDesktop service.
@@ -24,9 +39,10 @@ export function createAgentToolsForContext(ctx) {
   return createAgentToolRegistry({
     tools,
     desktop,
-    // Image publication is added by the SDK image stage. JSON actions remain
-    // available even when no artifact publisher is wired.
-    imagePublisher: ctx.toolboxAgentImages ?? ctx.get?.('toolboxAgentImages'),
+    // Image actions register only when the durable attachment store and the
+    // Codex-owned artifact reader are both present. JSON actions do not depend
+    // on either service.
+    imagePublisher: resolveImagePublisher(ctx),
   })
 }
 

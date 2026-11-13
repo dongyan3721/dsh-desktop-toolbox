@@ -2,6 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   assertKnownKeys,
   invalidRequest,
+  renderAgentImage,
   renderJson,
   renderText,
   requireArray,
@@ -55,6 +56,7 @@ export function buildScreenInkParams(action, args) {
 }
 
 function renderScreenInk(args, value) {
+  if (args.action === 'snapshot') return renderAgentImage(value, '当前注释画布快照已附加为图像')
   if (args.action === 'draw' && value !== null && typeof value === 'object') {
     if (Number.isSafeInteger(value.applied)) {
       const revision = Number.isSafeInteger(value.revision) ? `，画布版本 ${value.revision}` : ''

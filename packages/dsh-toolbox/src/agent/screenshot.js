@@ -2,6 +2,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   assertKnownKeys,
   invalidRequest,
+  renderAgentImage,
   renderJson,
   requireInteger,
 } from './common.js'
@@ -62,6 +63,7 @@ export function createScreenshotTool(actions, run) {
     output: {
       schema: { type: 'json' },
       render(args, value) {
+        if (args.action === 'capture') return renderAgentImage(value, '截图已附加为图像')
         return renderJson({ action: args.action, result: value })
       },
     },
