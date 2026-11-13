@@ -119,6 +119,10 @@ export function renderText(text) {
  * A bare path or an unknown object never becomes an image block.
  */
 export function renderAgentImage(value, label) {
+  if (value !== null && typeof value === 'object' && value.publication === 'cancelled'
+    && value.artifact !== null && typeof value.artifact === 'object') {
+    return renderText(`${label}已捕获，但取消后未发布图像。`)
+  }
   const image = value !== null && typeof value === 'object' ? value.image : undefined
   if (image === null || typeof image !== 'object' || Array.isArray(image)
     || typeof image.attachmentId !== 'string' || image.attachmentId === '') {
