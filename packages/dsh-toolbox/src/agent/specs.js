@@ -54,6 +54,19 @@ export const MODULE_SPECS = Object.freeze({
       { id: 'hourly', method: 'agent.usage.hourly', image: false },
     ]),
   }),
+  sticky_note: Object.freeze({
+    id: 'sticky_note',
+    toolName: 'toolbox_notes',
+    label: '便笺',
+    description: '搜索、读取、创建、更新或显式打开已授权的桌面便笺。更新必须带 expected_updated_at，冲突不会覆盖用户编辑。',
+    actions: actions([
+      { id: 'search', method: 'agent.notes.search', image: false },
+      { id: 'read', method: 'agent.notes.read', image: false },
+      { id: 'create', method: 'agent.notes.create', image: false },
+      { id: 'update', method: 'agent.notes.update', image: false },
+      { id: 'open', method: 'agent.notes.open', image: false },
+    ]),
+  }),
 })
 
 export const SUPPORTED_MODULE_IDS = Object.freeze(Object.keys(MODULE_SPECS))

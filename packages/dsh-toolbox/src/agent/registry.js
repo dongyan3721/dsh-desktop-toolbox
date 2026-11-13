@@ -4,12 +4,15 @@ import { createScreenshotTool } from './screenshot.js'
 import { createClipboardTool } from './clipboard.js'
 import { createScreenInkTool } from './screen-ink.js'
 import { createUsageTool } from './app-usage.js'
+import { createNotesTool } from './notes.js'
+import { validateArtifactDescriptor } from './image.js'
 
 const FACTORIES = Object.freeze({
   screenshot: createScreenshotTool,
   clipboard: createClipboardTool,
   screen_ink: createScreenInkTool,
   app_usage: createUsageTool,
+  sticky_note: createNotesTool,
 })
 
 const DISCONNECT_CODES = new Set([
@@ -50,6 +53,18 @@ function effectiveFor(snapshot, moduleId) {
 
 function sameActions(left, right) {
   return left.length === right.length && left.every((action, index) => action === right[index])
+}
+
+function isCancellation(error) {
+  return error?.name === 'AbortError' || error?.code === 'CANCELLED'
+}
+
+function committedImageResult(descriptor) {
+  return jsonSafe({
+    artifact: validateArtifactDescriptor(descriptor),
+    image: null,
+    publication: 'cancelled',
+  })
 }
 
 export class AgentToolRegistry {
@@ -170,6 +185,12 @@ export class AgentToolRegistry {
     this.withdrawAll()
   }
 
+  setImagePublisher(publisher) {
+    if (this.disposed) return
+    this.imagePublisher = publisher
+    if (this.snapshot !== undefined) this.reconcile(this.snapshot)
+  }
+
   handleDisconnect(error) {
     if (DISCONNECT_CODES.has(error?.code)) this.withdrawAll()
   }
@@ -217,16 +238,22 @@ export class AgentToolRegistry {
     try {
       const { action } = await this.ensureAuthorized(moduleId, actionId, exec.signal)
       const result = await this.desktop.agentCall(action.method, params, { signal: exec.signal })
-      throwIfAborted(exec.signal)
+      // A resolved native result is authoritative. Do not turn a committed
+      // write into "not executed" just because cancellation arrived late.
       if (action.image) {
-        await this.ensureAuthorized(moduleId, actionId, exec.signal)
-        return this.imagePublisher.publish({
-          moduleId,
-          actionId,
-          descriptor: result,
-          signal: exec.signal,
-          ensureAuthorized: signal => this.ensureAuthorized(moduleId, actionId, signal),
-        })
+        if (exec.signal.aborted) return committedImageResult(result)
+        try {
+          return await this.imagePublisher.publish({
+            moduleId,
+            actionId,
+            descriptor: result,
+            signal: exec.signal,
+            ensureAuthorized: signal => this.ensureAuthorized(moduleId, actionId, signal),
+          })
+        } catch (error) {
+          if (isCancellation(error)) return committedImageResult(result)
+          throw error
+        }
       }
       return jsonSafe(result)
     } catch (error) {
