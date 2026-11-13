@@ -26,6 +26,8 @@ Windows `RegisterHotKey` 返回成功/失败和 GetLastError，并不在结果�
 
 三个 thread 虽同处 Zed，实际每条命令和编辑必须指向各自绝对工作树。历史目录名不代表仍由旧应用负责。各自的构建/TEMP/Cargo 输出归各自工作树；D 盘缓存和 SDK 只读，不改用户 Profile、个人数据库、全局工具。已有共享 SDK 是 rc.1；rc.3 新 API 必须另有安装物证据，不凭猜测扩展。
 
+派工记录：2026-11-14，Codex 已通过现有 Zed 界面分别向 Grok Build、Copilot、Claude Code 三个 thread 发送任务书路径、绝对工作树和写入边界；随后分别观察到 Grok 读取 cursor 工作树代码并核实 API、Copilot 评估 Vue library 嵌入构建、Claude 读取剪贴板存储/采集实现，三者均已开始处理。未更改其模型/模式；尚无本轮完成交付或验收结论。
+
 ## 控制台接线原则与顺序
 
 1. Copilot 先核实可复用原 Vue Dashboard 的打包/嵌入路径，再实现不自动弹窗的真实控制台。优先复用组件、目录、样式；若必须适配 Harness 的 React 容器，业务状态与操作仍来自同一原生服务，不维护第二份配置/目录。不得仅放截图、链接、假开关或未接线的成功提示。
