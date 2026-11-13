@@ -283,6 +283,9 @@ impl WindowBackend for TauriWindowBackend {
         if let Some(window) = self.app.get_webview_window(label) {
             window.destroy().map_err(to_core_error)?;
         }
+        if let Some(host) = self.app.try_state::<Arc<DesktopHost>>() {
+            host.agent_ui.drop_label(label);
+        }
         Ok(())
     }
 
@@ -458,6 +461,12 @@ async fn ipc(app: AppHandle, window: tauri::WebviewWindow, mut request: IpcReque
         return IpcResponse::success(json!({ "exit_requested": true }));
     }
     let host = app.state::<Arc<DesktopHost>>().inner().clone();
+    if request.cmd == "toolbox_agent_ui_ready" || request.cmd == "toolbox_agent_ui_result" {
+        return match host.agent_ui.handle(window.label(), &request.cmd, &request.args) {
+            Ok(value) => IpcResponse::success(value),
+            Err(error) => IpcResponse::err(error.message),
+        };
+    }
     if request.cmd == "kernel_set_shortcut_recording" {
         let Some(recording) = request.args.get("recording").and_then(Value::as_bool) else {
             return IpcResponse::err("Missing recording boolean");
@@ -1552,6 +1561,12 @@ pub fn run() {
                         }),
                     );
                 }));
+            let emit_app = app.handle().clone();
+            host.agent_ui.set_emitter(Arc::new(move |label, event, payload| {
+                if let Some(window) = emit_app.get_webview_window(label) {
+                    let _ = window.emit(event, payload);
+                }
+            }));
             app.manage(host);
             #[cfg(target_os = "windows")]
             if !plugin {

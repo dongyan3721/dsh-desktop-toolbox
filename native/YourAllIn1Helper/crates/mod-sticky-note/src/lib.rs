@@ -815,7 +815,8 @@ impl StickyNoteModule {
         })
     }
 
-    /// CAS plus a new write session, under the per-note lock, so an older autosave cannot land after it.
+    /// CAS plus a new write cursor. The cursor only rejects an older autosave.
+    /// It does not mean an editor window is open or registered.
     pub fn commit_agent_update(
         &self,
         ctx: &ModuleContext,
@@ -918,19 +919,25 @@ impl StickyNoteModule {
 
         let now = Utc::now().timestamp_millis();
         let saved = ctx.db.with_conn(|conn| {
+            let previous: i64 = conn.query_row(
+                "SELECT updated_at FROM sticky_notes WHERE id = ?1",
+                params![note_id],
+                |row| row.get(0),
+            )?;
+            let next = next_conflict_token(previous, now)?;
             let affected = if let Some(new_title) = title {
                 conn.execute(
                     "UPDATE sticky_notes
                      SET title = ?1, content_md = ?2, updated_at = ?3
                      WHERE id = ?4",
-                    params![new_title, content_md, now, note_id],
+                    params![new_title, content_md, next, note_id],
                 )?
             } else {
                 conn.execute(
                     "UPDATE sticky_notes
                      SET content_md = ?1, updated_at = ?2
                      WHERE id = ?3",
-                    params![content_md, now, note_id],
+                    params![content_md, next, note_id],
                 )?
             };
 

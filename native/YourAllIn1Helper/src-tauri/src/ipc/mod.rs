@@ -13,6 +13,11 @@ mod vault;
 mod window_pin;
 impl DesktopHost {
     pub(crate) fn dispatch_inner(&self, cmd: &str, args: Value) -> CoreResult<Value> {
+        if cmd == "toolbox_agent_ui_ready" || cmd == "toolbox_agent_ui_result" {
+            return Err(CoreError::Config(
+                "agent ui handshake requires the invoking window".into(),
+            ));
+        }
         if cmd.starts_with("kernel_") {
             return self.dispatch_kernel(cmd, args);
         }
