@@ -12,17 +12,17 @@
       <section v-if="page === 'features'" id="features-page" role="tabpanel" aria-labelledby="features-tab">
         <div class="page-heading"><h2>{{ t('desktop.yourTools') }}</h2><p>{{ t('desktop.featuresHint') }}</p></div>
         <div v-if="!status && !error" class="loading-text" role="status">{{ t('desktop.loading') }}</div>
-        <button v-else-if="!status" class="retry-button" @click="refreshDashboard">重试连接</button>
+        <button v-else-if="!status" class="retry-button" @click="refreshDashboard">{{ t('desktop.retryConnection') }}</button>
         <ModuleManager v-if="status" :modules="status.module_catalog" :opening="opening" @changed="refreshDashboard" @open="openFeature" />
       </section>
       <section v-else id="preferences-page" role="tabpanel" aria-labelledby="preferences-tab">
-        <p v-if="embedded" class="native-shortcut-notice">快捷键录入需要原生窗口焦点。请打开独立主窗口，在“偏好设置”中录入快捷键。</p>
+        <p v-if="embedded" class="native-shortcut-notice">{{ t('desktop.nativeShortcutNotice') }}</p>
         <PreferencesPanel :status="status" @changed="refreshDashboard" />
       </section>
     </main>
     <footer class="launcher-footer">
       <button class="footer-link" @click="openManual">{{ t('desktop.manual') }} <span aria-hidden="true">↗</span></button>
-      <button v-if="embedded" class="footer-link" @click="openNativeMain">打开独立主窗口</button>
+      <button v-if="embedded" class="footer-link" @click="openNativeMain">{{ t('desktop.openNativeMain') }}</button>
       <button v-else class="footer-link quit" @click="shutdownDaemon">{{ t('app.quit') }}</button>
     </footer>
   </div>
@@ -32,6 +32,7 @@ import { ref, onMounted, onUnmounted } from 'vue';
 import { invokeIpc, type KernelStatus } from '../api/ipc';
 import { t, syncLocaleFromBackendConfig } from '../utils/i18n';
 import { featureForRoute } from '../utils/features';
+import { currentThemeMode, setThemeMode, type ThemeMode } from '../utils/theme';
 import ProductLogo from './ProductLogo.vue';
 import ModuleManager from './ModuleManager.vue';
 import PreferencesPanel from './PreferencesPanel.vue';
@@ -44,12 +45,17 @@ let unlistenNavigate: (() => void) | undefined;
 let unlistenKernel: (() => void) | undefined;
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let refreshing = false;
+let disposed = false;
 async function refreshDashboard() {
   if (refreshing) return;
   refreshing = true;
   try {
-    status.value = await invokeIpc<KernelStatus>('kernel_get_status');
+    const value = await invokeIpc<KernelStatus>('kernel_get_status');
+    if (disposed) return;
+    status.value = value;
     if (status.value.config.general?.language) syncLocaleFromBackendConfig(status.value.config.general.language);
+    const theme = status.value.config.general?.theme;
+    if (['light', 'dark', 'system'].includes(theme ?? '') && theme !== currentThemeMode.value) setThemeMode(theme as ThemeMode);
     error.value = '';
   } catch (err) { error.value = err instanceof Error ? err.message : String(err); }
   finally { refreshing = false; }
@@ -81,15 +87,17 @@ async function shutdownDaemon() {
 }
 onMounted(async () => {
   await refreshDashboard();
+  if (disposed) return;
   await applyDashboardRoute(new URLSearchParams(window.location.search).get('route'));
+  if (disposed) return;
   const eventApi = (window as any).__TAURI__?.event;
   if (typeof eventApi?.listen === 'function') {
     unlistenNavigate = await eventApi.listen('dashboard://navigate', (event: { payload: string }) => void applyDashboardRoute(event.payload));
     unlistenKernel = await eventApi.listen('kernel://updated', () => void refreshDashboard());
   }
-  refreshTimer = setInterval(refreshDashboard, 5000);
+  if (!disposed) refreshTimer = setInterval(refreshDashboard, 5000);
 });
-onUnmounted(() => { if (refreshTimer) clearInterval(refreshTimer); unlistenNavigate?.(); unlistenKernel?.(); });
+onUnmounted(() => { disposed = true; if (refreshTimer) clearInterval(refreshTimer); unlistenNavigate?.(); unlistenKernel?.(); });
 </script>
 <style scoped>
 .launcher { display: flex; flex-direction: column; height: 100vh; background: var(--macos-bg-window); }

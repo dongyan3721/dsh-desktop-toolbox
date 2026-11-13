@@ -637,70 +637,7 @@ async fn ipc(app: AppHandle, window: tauri::WebviewWindow, mut request: IpcReque
         }
     }
     if response.ok && request.cmd == "kernel_set_module_enabled" {
-        let now_enabled = module_id
-            .as_deref()
-            .map(|id| host.kernel().registry().is_enabled(id));
-        let rollback_reason = match register_global_shortcuts(&app) {
-            Err(error) => Some(error.to_string()),
-            // 只有刚开启的模块自身快捷键注册失败才撤销开启；其他模块的失败已记录供界面显示。
-            Ok(failures) if now_enabled == Some(true) && previous == Some(false) => failures
-                .iter()
-                .find(|f| Some(f.module_id.as_str()) == module_id.as_deref())
-                .map(|f| format!("{}（{}）：{}", f.accelerator, f.action_id, f.error)),
-            Ok(_) => None,
-        };
-        if let Some(reason) = rollback_reason {
-            if let (Some(id), Some(enabled)) = (module_id.as_deref(), previous) {
-                let _ = host.kernel().set_module_enabled(id, enabled);
-                let _ = host.sync_panel_shortcuts();
-            }
-            let _ = register_global_shortcuts(&app);
-            let _ = update_tray_menu(&app);
-            emit_update(&app);
-            return IpcResponse::err(format!(
-                "更新系统快捷键失败，已尝试还原模块状态：{}",
-                reason
-            ));
-        }
-        let _ = update_tray_menu(&app);
-        sync_vault_native_observer(&app);
-        if module_id.as_deref() == Some(mod_screenshot::MODULE_ID)
-            && !host
-                .kernel()
-                .registry()
-                .is_enabled(mod_screenshot::MODULE_ID)
-        {
-            // 模块 on_shutdown 已经销毁；这里兜底清理窗口池之外残留的同名原生窗口。
-            for (label, window) in app.webview_windows() {
-                if label == mod_screenshot::OVERLAY_LABEL
-                    || label == mod_screenshot::CONTROL_LABEL
-                    || label == mod_screenshot::PREVIEW_LABEL
-                    || label.starts_with(mod_screenshot::pins::PIN_LABEL_PREFIX)
-                {
-                    let _ = window.destroy();
-                }
-            }
-        }
-        if module_id.as_deref() == Some("window_pin")
-            && !host.kernel().registry().is_enabled("window_pin")
-        {
-            for (label, window) in app.webview_windows() {
-                if label.starts_with("pin-badge-") || label.starts_with("pin-mirror-") {
-                    let _ = window.destroy();
-                }
-            }
-        }
-        if module_id.as_deref() == Some("screen_ink")
-            && !host.kernel().registry().is_enabled("screen_ink")
-        {
-            for label in ["screen-ink-canvas", "screen-ink-toolbar"] {
-                if let Some(window) = app.get_webview_window(label) {
-                    let _ = window.destroy();
-                }
-            }
-            crate::ink_window::apply_cursor_shape(&app, "arrow");
-        }
-        emit_update(&app);
+        return finish_module_toggle(&app, &host, module_id.as_deref(), previous, response);
     } else if response.ok && request.cmd == "kernel_update_general_config" {
         // 当用户切换多语言时，同步刷新系统托盘菜单多语言文案并通知各窗口
         let _ = update_tray_menu(&app);
@@ -751,7 +688,7 @@ pub(crate) fn manual_data_dir(app: &AppHandle) -> CoreResult<std::path::PathBuf>
     app.path().app_data_dir().map_err(to_core_error)
 }
 
-fn emit_update(app: &AppHandle) {
+pub(crate) fn emit_update(app: &AppHandle) {
     let _ = app.emit("kernel://updated", Value::Null);
 }
 
@@ -830,11 +767,11 @@ fn trigger_action(app: &AppHandle, action_id: &str) {
 }
 
 /// 单个系统快捷键注册失败的记录。
-struct NativeShortcutFailure {
-    module_id: String,
-    action_id: String,
-    accelerator: String,
-    error: String,
+pub(crate) struct NativeShortcutFailure {
+    pub(crate) module_id: String,
+    pub(crate) action_id: String,
+    pub(crate) accelerator: String,
+    pub(crate) error: String,
 }
 
 /// The OS consumes registered accelerators before WebView keydown. Forward them
@@ -858,7 +795,7 @@ pub(crate) fn record_shortcut_if_focused(app: &AppHandle, accelerator: &str) -> 
 }
 
 /// Re-register physical bindings, recording per-action OS errors for preferences.
-fn register_global_shortcuts(app: &AppHandle) -> anyhow::Result<Vec<NativeShortcutFailure>> {
+pub(crate) fn register_global_shortcuts(app: &AppHandle) -> anyhow::Result<Vec<NativeShortcutFailure>> {
     let _native_guard = crate::shortcut_conflicts::NATIVE_SHORTCUT_GATE.lock();
     app.global_shortcut().unregister_all()?;
     let host = app.state::<Arc<DesktopHost>>();
@@ -1392,7 +1329,7 @@ fn build_tray_menu(app: &AppHandle) -> Result<Menu<tauri::Wry>, tauri::Error> {
     Ok(menu)
 }
 
-fn update_tray_menu(app: &AppHandle) -> Result<(), tauri::Error> {
+pub(crate) fn update_tray_menu(app: &AppHandle) -> Result<(), tauri::Error> {
     if let Some(tray) = app.tray_by_id("main-tray") {
         tray.set_menu(Some(build_tray_menu(app)?))?;
     }
@@ -1872,4 +1809,75 @@ mod compact_panel_tests {
             }
         );
     }
+}
+
+/// Shared module-toggle OS effects for native UI and the embedded human console.
+pub(crate) fn finish_module_toggle(app: &AppHandle, host: &DesktopHost, module_id: Option<&str>, previous: Option<bool>, response: IpcResponse) -> IpcResponse {
+    if !response.ok { return response; }
+
+        let now_enabled = module_id
+            .map(|id| host.kernel().registry().is_enabled(id));
+        let rollback_reason = match register_global_shortcuts(&app) {
+            Err(error) => Some(error.to_string()),
+            // 只有刚开启的模块自身快捷键注册失败才撤销开启；其他模块的失败已记录供界面显示。
+            Ok(failures) if now_enabled == Some(true) && previous == Some(false) => failures
+                .iter()
+                .find(|f| Some(f.module_id.as_str()) == module_id)
+                .map(|f| format!("{}（{}）：{}", f.accelerator, f.action_id, f.error)),
+            Ok(_) => None,
+        };
+        if let Some(reason) = rollback_reason {
+            if let (Some(id), Some(enabled)) = (module_id, previous) {
+                let _ = host.kernel().set_module_enabled(id, enabled);
+                let _ = host.sync_panel_shortcuts();
+            }
+            let _ = register_global_shortcuts(&app);
+            let _ = update_tray_menu(&app);
+            emit_update(&app);
+            return IpcResponse::err(format!(
+                "更新系统快捷键失败，已尝试还原模块状态：{}",
+                reason
+            ));
+        }
+        let _ = update_tray_menu(&app);
+        sync_vault_native_observer(&app);
+        if module_id == Some(mod_screenshot::MODULE_ID)
+            && !host
+                .kernel()
+                .registry()
+                .is_enabled(mod_screenshot::MODULE_ID)
+        {
+            // 模块 on_shutdown 已经销毁；这里兜底清理窗口池之外残留的同名原生窗口。
+            for (label, window) in app.webview_windows() {
+                if label == mod_screenshot::OVERLAY_LABEL
+                    || label == mod_screenshot::CONTROL_LABEL
+                    || label == mod_screenshot::PREVIEW_LABEL
+                    || label.starts_with(mod_screenshot::pins::PIN_LABEL_PREFIX)
+                {
+                    let _ = window.destroy();
+                }
+            }
+        }
+        if module_id == Some("window_pin")
+            && !host.kernel().registry().is_enabled("window_pin")
+        {
+            for (label, window) in app.webview_windows() {
+                if label.starts_with("pin-badge-") || label.starts_with("pin-mirror-") {
+                    let _ = window.destroy();
+                }
+            }
+        }
+        if module_id == Some("screen_ink")
+            && !host.kernel().registry().is_enabled("screen_ink")
+        {
+            for label in ["screen-ink-canvas", "screen-ink-toolbar"] {
+                if let Some(window) = app.get_webview_window(label) {
+                    let _ = window.destroy();
+                }
+            }
+            crate::ink_window::apply_cursor_shape(&app, "arrow");
+        }
+        emit_update(&app);
+
+    response
 }

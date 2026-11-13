@@ -1067,7 +1067,10 @@
         "common_tools": "You can quit screenshot, input-method, remote-control, voice, and script tools one at a time, then check again. That order is only a suggestion.",
         "windows_key": "Microsoft documents combinations that use the Windows key as reserved for the operating system. That does not identify a program."
       }
-    }
+    },
+    "retryConnection": "Retry connection",
+    "nativeShortcutNotice": "Shortcut recording requires native window focus. Open the separate toolbox window and use Preferences to record shortcuts.",
+    "openNativeMain": "Open separate toolbox window"
   },
   "feedback": {
     "saved": "Saved to",

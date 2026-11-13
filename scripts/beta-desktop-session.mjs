@@ -82,6 +82,7 @@ try {
       if (command.op === 'load') { await load(); continue; }
       if (command.op === 'fixture-access') { await fixtureAccess(command); continue; }
       const desktop = ctx.get('toolboxDesktop');
+      if (command.op === 'console') { await record({ event: 'console', action: command.action, value: await desktop.console({ action: command.action, args: command.args ?? {} }) }); continue; }
       if (command.op === 'show') { await record({ event: 'show', value: await desktop.showMain() }); continue; }
       if (command.op === 'panel') {
         assert.notEqual(command.module, 'password_vault', 'Credential UI is manual acceptance only');

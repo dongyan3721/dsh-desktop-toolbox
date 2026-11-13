@@ -102,12 +102,22 @@ export function t(key: string, params?: Record<string, string | number>): string
 /**
  * 将当前语言同步写入 DOM `<html lang="...">` 与文档标题
  */
+let localeTarget: HTMLElement | undefined;
+export function setLocaleTarget(target: HTMLElement): () => void {
+  const previous = localeTarget;
+  const original = target.getAttribute('lang');
+  localeTarget = target;
+  return () => {
+    localeTarget = previous;
+    if (original === null) target.removeAttribute('lang'); else target.setAttribute('lang', original);
+  };
+}
 export function applyLocaleToDocument(locale: SupportedLocale = currentLocale.value) {
   if (typeof document === 'undefined') {
     return;
   }
   const option = LOCALE_OPTIONS.find((item) => item.code === locale) || LOCALE_OPTIONS[0];
-  document.documentElement.setAttribute('lang', option.htmlLang);
+  (localeTarget ?? document.documentElement).setAttribute('lang', option.htmlLang);
 }
 
 /**
@@ -118,20 +128,14 @@ export async function setLocale(
   persistToBackend: boolean = true
 ): Promise<SupportedLocale> {
   const normalized = normalizeLocale(nextLocale);
+  // Commit the shared setting before publishing a local success state.
+  if (persistToBackend) await invokeIpc('kernel_update_general_config', { language: normalized });
   currentLocale.value = normalized;
 
   if (typeof window !== 'undefined' && window.localStorage) {
     window.localStorage.setItem(LOCALE_STORAGE_KEY, normalized);
   }
   applyLocaleToDocument(normalized);
-
-  if (persistToBackend) {
-    try {
-      await invokeIpc('kernel_update_general_config', { language: normalized });
-    } catch (err) {
-      console.error('同步语言配置至后端 config.json 失败:', err);
-    }
-  }
 
   return normalized;
 }

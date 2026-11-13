@@ -10,7 +10,7 @@ const value = flag => args[args.indexOf(flag) + 1];
 const pipe = value('--pipe-name');
 const instanceId = value('--instance-id');
 const dataDir = value('--data-dir');
-const capabilities = ['status', 'desktop.show_main', 'desktop.open_panel', 'desktop.shutdown'];
+const capabilities = ['status', 'desktop.show_main', 'desktop.open_panel', 'desktop.shutdown', 'desktop.console'];
 const server = net.createServer(socket => {
   const decoder = new FrameDecoder();
   socket.on('error', () => {});
@@ -23,6 +23,7 @@ const server = net.createServer(socket => {
         await appendFile(join(dataDir, 'fixture-calls.jsonl'), `${JSON.stringify({ method: frame.method, params: frame.params })}\n`);
         const response = { v: 1, type: 'response', id: frame.id, ok: true, result: { opened: true } };
         if (frame.method === 'status') response.result = { protocolVersion: 1, desktop: true, nativeVersion: 'protocol-fixture', capabilities, modules: [] };
+        if (frame.method === 'desktop.console') response.result = { fixtureAccepted: frame.params };
         if (frame.method === 'desktop.shutdown') {
           if (args.includes('--shutdown-fails')) {
             response.ok = false;

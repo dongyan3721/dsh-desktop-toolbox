@@ -37,6 +37,9 @@ impl ControlError {
 }
 
 pub trait DesktopControl: Send + Sync {
+    fn console_call(&self, _params: &Value, _cancel: Arc<AtomicBool>) -> Result<Value, ControlError> {
+        Err(ControlError::new("UNSUPPORTED", "desktop console is unavailable"))
+    }
     fn status(&self) -> Value;
     fn show_main(&self, cancel: &AtomicBool) -> Result<Value, ControlError>;
     fn open_panel(&self, module_id: &str, cancel: &AtomicBool) -> Result<Value, ControlError>;
@@ -299,6 +302,7 @@ fn call_method(
         return Err(ControlError::cancelled());
     }
     match method {
+        "desktop.console" => control.console_call(params, Arc::clone(cancel)),
         "status" => {
             require_empty(params)?;
             Ok(control.status())

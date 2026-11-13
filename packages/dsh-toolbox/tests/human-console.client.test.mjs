@@ -184,7 +184,7 @@ test('embedded dashboard keeps native shortcuts and the independent window expli
     new URL('../../../native/YourAllIn1Helper/src-ui/src/components/Dashboard.vue', import.meta.url),
     'utf8',
   )
-  assert.match(source, /快捷键录入需要原生窗口焦点/)
+  assert.match(source, /desktop\.nativeShortcutNotice/)
   assert.match(source, /v-if="embedded" class="footer-link" @click="openNativeMain"/)
   assert.match(source, /v-else class="footer-link quit" @click="shutdownDaemon"/)
   const mounted = source.match(/onMounted\(async \(\) => \{([\s\S]*?)\n\}\);/)[1]

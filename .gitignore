@@ -10,4 +10,5 @@ vendor/
 *.tsbuildinfo
 .cordis/
 .worktrees/
+packages/dsh-toolbox-client/.embedded-build/
 packages/dsh-toolbox/resources/

@@ -28,6 +28,8 @@ test('desktop service loads without tools and settles its owned protocol fixture
     await desktop.showMain();
     await desktop.showMain();
     await desktop.openPanel('sticky_note');
+    assert.deepEqual(await desktop.console({ action: 'snapshot', args: {} }), { fixtureAccepted: { action: 'snapshot', args: {} } });
+    await assert.rejects(desktop.console({ action: 'invoke', args: { cmd: 'vault_list' } }), { code: 'INVALID_REQUEST' });
     await assert.rejects(desktop.openPanel('../../private'), { code: 'INVALID_REQUEST' });
     const controller = new AbortController(); controller.abort();
     await assert.rejects(desktop.showMain({ signal: controller.signal }), { name: 'AbortError' });
@@ -44,6 +46,7 @@ test('desktop service loads without tools and settles its owned protocol fixture
     assert.equal(calls.filter(call => call.method === 'desktop.show_main').length, 3);
     assert.deepEqual(calls.find(call => call.method === 'desktop.open_panel').params, { module_id: 'sticky_note' });
     assert.equal(calls.at(-1).method, 'desktop.shutdown');
+    assert.equal(calls.filter(call => call.method === 'desktop.console').length, 1);
   } finally { await ctx.fiber.dispose(); }
 });
 

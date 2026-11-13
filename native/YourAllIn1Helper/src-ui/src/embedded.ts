@@ -2,6 +2,7 @@ import { createApp, watch } from 'vue';
 import Dashboard from './components/Dashboard.vue';
 import { ACCENT_PALETTE, currentAccent, currentThemeMode, isDarkActive, setThemeMode } from './embedded-theme';
 import { setIpcTransport } from './api/ipc';
+import { setLocaleTarget } from './utils/i18n';
 import { createHumanConsoleTransport } from '../../../../packages/dsh-toolbox-client/src/human-console.js';
 import baseStyle from './styles/macos-base.css?inline';
 import panelStyle from './styles/panel-cards.css?inline';
@@ -13,11 +14,8 @@ export interface EmbeddedConnection {
 }
 
 function embeddedBaseStyle(): string {
-  return baseStyle
-    .replace(/:root\b/gu, ':host')
-    .replace(/html\.dark\b/gu, ':host([data-theme="dark"])')
-    .replace(/\[data-theme="dark"\]/gu, ':host([data-theme="dark"])')
-    .replace(/\bbody\b/gu, ':host');
+  return baseStyle.replace(/html\.dark\b|\[data-theme="dark"\]|:root\b|\bbody\b/gu,
+    selector => selector === ':root' || selector === 'body' ? ':host' : ':host([data-theme="dark"])');
 }
 
 export function mountEmbeddedDashboard(
@@ -76,6 +74,7 @@ export function mountEmbeddedDashboard(
     { dispose: () => consoleTransport.dispose() },
   );
   const restoreTransport = setIpcTransport(transport);
+  const restoreLocaleTarget = setLocaleTarget(container);
   const app = createApp(Dashboard, { embedded: true });
   let mounted = false;
   try {
@@ -86,6 +85,7 @@ export function mountEmbeddedDashboard(
     if (mounted) app.unmount();
     transport.dispose();
     restoreTransport();
+    restoreLocaleTarget();
     stopThemeWatch();
     systemTheme.removeEventListener('change', syncTheme);
     restoreHostTheme();
@@ -99,6 +99,7 @@ export function mountEmbeddedDashboard(
     if (mounted) app.unmount();
     transport.dispose();
     restoreTransport?.();
+    restoreLocaleTarget();
     stopThemeWatch();
     systemTheme.removeEventListener('change', syncTheme);
     restoreHostTheme();

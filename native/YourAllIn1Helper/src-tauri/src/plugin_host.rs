@@ -179,11 +179,14 @@ async fn listen(
     }
 }
 
-struct TauriDesktopControl {
+pub(crate) struct TauriDesktopControl {
     app: AppHandle,
 }
 
 impl DesktopControl for TauriDesktopControl {
+    fn console_call(&self, params: &Value, cancel: Arc<AtomicBool>) -> Result<Value, ControlError> {
+        crate::human_console::call(self, params, cancel)
+    }
     fn status(&self) -> Value {
         self.on_main(|app| {
             let Some(host) = app.try_state::<Arc<DesktopHost>>() else {
@@ -342,7 +345,7 @@ impl DesktopControl for TauriDesktopControl {
 }
 
 impl TauriDesktopControl {
-    fn on_main<T, F>(&self, op: F) -> Result<T, ControlError>
+    pub(crate) fn on_main<T, F>(&self, op: F) -> Result<T, ControlError>
     where
         T: Send + 'static,
         F: FnOnce(&AppHandle) -> T + Send + 'static,

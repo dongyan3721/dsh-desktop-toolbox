@@ -40,6 +40,7 @@ mod agent_artifacts;
 mod agent_ui;
 mod clipboard_window;
 mod desktop_control;
+mod human_console;
 mod plugin_host;
 mod plugin_launch;
 mod demo;

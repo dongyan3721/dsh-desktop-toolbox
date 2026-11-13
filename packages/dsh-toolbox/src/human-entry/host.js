@@ -7,6 +7,8 @@
  * `@deepseek-ai/dsh-client-connection` generic RPC channel.
  */
 
+import { validateConsoleRequest } from './console.js'
+
 export const name = 'dsh-toolbox-human-entry'
 export const inject = ['connection']
 
@@ -14,7 +16,7 @@ export const inject = ['connection']
 export const HUMAN_ENTRY_CHANNEL = '/api'
 export const HUMAN_ENTRY_PREFIX = 'toolbox-human/'
 
-export const HUMAN_ENTRY_ENDPOINTS = Object.freeze(['status', 'showMain', 'openPanel'])
+export const HUMAN_ENTRY_ENDPOINTS = Object.freeze(['status', 'showMain', 'openPanel', 'console'])
 
 async function controlEnvelope(request) {
   const reader = request.body?.getReader()
@@ -212,7 +214,10 @@ export function createHumanEntryHandler(getDesktop) {
     }
 
     let request
-    if (endpoint === 'openPanel') {
+    if (endpoint === 'console') {
+      try { request = { value: validateConsoleRequest(payload) } }
+      catch { return requestFailure('invalid toolbox console request') }
+    } else if (endpoint === 'openPanel') {
       request = validateOpenPanelPayload(payload)
     } else {
       request = validateEmptyPayload(payload)
@@ -226,7 +231,9 @@ export function createHumanEntryHandler(getDesktop) {
 
     try {
       let value
-      if (endpoint === 'status') {
+      if (endpoint === 'console') {
+        value = await methodResult.method.call(desktopResult.desktop, request.value, { signal })
+      } else if (endpoint === 'status') {
         value = await methodResult.method.call(desktopResult.desktop, signal)
       } else if (endpoint === 'showMain') {
         value = confirmOpened(

@@ -32,13 +32,14 @@ test('actual Host Connection registers and releases the RPC route in a strict Co
       },
     })
     await ctx.plugin({ name: 'test-host-connection', apply(connectionCtx) { new HostConnectionService(connectionCtx, [], {}) } })
-    ctx.provide('toolboxDesktop', { async showMain() { return { opened: true } } })
+    ctx.provide('toolboxDesktop', { async showMain() { return { opened: true } }, async console(payload) { return { accepted: payload } } })
     const shared = ctx.get('connection').createSharedFetchHandler('/api')
     const fiber = await ctx.plugin(HumanEntry)
     await fiber.await()
     const client = await loadClientBundle()
     const connection = installActualConnection((input, init) => shared.fetch(new Request(new URL(input, 'http://fixture/'), init), ctx.get('connection').browserPeer))
     assert.deepEqual(await client.callHumanEntry(connection, 'showMain', {}, freshSignal()), { opened: true })
+    assert.deepEqual(await client.callHumanEntry(connection, 'console', { action: 'snapshot', args: {} }, freshSignal()), { accepted: { action: 'snapshot', args: {} } })
     const owner = ctx.get('connection').browserPeer
     const url = 'http://fixture/api/toolbox-human/showMain'
     const post = (body, contentType = 'application/json') => new Request(url, { method: 'POST', headers: { 'content-type': contentType }, body })
@@ -47,6 +48,7 @@ test('actual Host Connection registers and releases the RPC route in a strict Co
     assert.equal((await shared.fetch(post('{}', 'text/plain'), owner)).status, 415)
     assert.equal((await shared.fetch(post(JSON.stringify({ type: 'client-request', rpcId: 'id', method: 'wrong', payload: {} })), owner)).status, 400)
     assert.equal((await shared.fetch(post('{}'), { principal: { kind: 'non-owner-fixture' } })).status, 403)
+    assert.equal((await shared.fetch(new Request('http://fixture/api/toolbox-human/console', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'client-request', rpcId: 'id', method: 'toolbox-human/console', payload: { action: 'snapshot', args: {} } }) }), { principal: { kind: 'non-owner-fixture' } })).status, 403)
     const cancelled = new AbortController(); cancelled.abort()
     await assert.rejects(shared.fetch(new Request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', signal: cancelled.signal }), owner), { name: 'AbortError' })
     await fiber.dispose()
@@ -59,6 +61,7 @@ async function loadClientBundle() {
   const source = await readFile(clientBundleUrl, 'utf8')
   let registration
   new Function('window', source)({
+    localStorage: { getItem() { return null }, setItem() {} },
     __ModuleLoader__: {
       load(value) {
         registration = value

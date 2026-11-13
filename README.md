@@ -2,6 +2,8 @@
 
 将 `C:\Users\xcxix\PyCharmProjects\YourAllIn1Helper` 迁移为 DeepSeek Harness 插件。
 
+2026-11-14：`0.1.0-beta.5` 集成候选增加 Harness 内嵌原 Vue 主控台、快捷键诊断详情、Windows 剪贴板来源，并将旧便笺工具迁到测试 fixture。开发范围见 [beta.5 计划](docs/BETA5_FEEDBACK_PLAN.zh-CN.md)；构建、打包和真实界面验收由 Codex 集成完成后记录，历史包/tag 不覆盖。
+
 2026-11-14：新增 `0.1.0-beta.4`。桌面组件在未配置 `DSH_HOME` 时使用 `%USERPROFILE%\.dsh\toolbox-desktop-data`。原生程序沿用 beta.3，依赖声明仍接受 DSH `0.2.2-rc.1` 与 `0.2.2-rc.3`。详见 [beta.4 记录](docs/BETA4_DESKTOP_DATA_DIR.zh-CN.md)。此前 [beta.3](docs/BETA3_DSH_RC3_DECLARATIONS.zh-CN.md) 只放宽了安装声明。
 
 产品主线是**供人日常使用的工具箱**：保留原界面、窗口、托盘与快捷键。当前 `0.1.0-beta.2` 已完成 A3 集成和本机受控验收；五项支持 Agent 的模块为截图、剪贴板、屏幕注释、应用使用时长、便笺，功能启停与 Agent 授权独立，新授权默认关闭。其他五项只供人使用。

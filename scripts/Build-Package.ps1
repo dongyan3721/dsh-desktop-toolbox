@@ -9,6 +9,8 @@ try {
             throw "Release archive already exists: $releaseName-$releaseVersion.tgz. Use a new version instead of replacing an artifact."
         }
     }
+    pnpm.cmd --dir packages/dsh-toolbox-client run build:client
+    if ($LASTEXITCODE -ne 0) { throw 'Embedded console build failed' }
     & "$PSScriptRoot/Build-Desktop.ps1"
     cargo build --manifest-path native/YourAllIn1Helper/Cargo.toml -p dsh-bridge --release --locked --offline
     if ($LASTEXITCODE -ne 0) { throw 'Native release build failed' }

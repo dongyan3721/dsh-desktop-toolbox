@@ -164,7 +164,7 @@ const shortcutGroups = computed(() => {
   return [...groups.values()].sort((a, b) => FEATURES.findIndex(f => f.module === a.module) - FEATURES.findIndex(f => f.module === b.module));
 });
 function moduleName(id: string) { const key = `moduleManager.names.${id}`; return t(key) === key ? id : t(key); }
-function actionName(shortcut: ShortcutPreference) { if (shortcut.spec.action_id.endsWith(':open_panel')) return t('desktop.openPanel'); const key = `desktop.actions.${shortcut.spec.action_id.replace(':', '_')}`; return t(key) === key ? shortcut.spec.description : t(key); }
+function actionName(shortcut: { spec: { action_id: string; description?: string } }) { if (shortcut.spec.action_id.endsWith(':open_panel')) return t('desktop.openPanel'); const key = `desktop.actions.${shortcut.spec.action_id.replace(':', '_')}`; return t(key) === key ? (shortcut.spec.description ?? shortcut.spec.action_id) : t(key); }
 function showError(err: unknown) {
   const message = err instanceof Error ? err.message : String(err);
   notice.value = message.includes('Shortcut conflict detected') ? t('desktop.shortcutConflict') : message;

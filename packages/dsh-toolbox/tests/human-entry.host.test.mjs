@@ -277,7 +277,7 @@ test('apply registers exact Connection routes and disposes them with the plugin'
 
   apply(ctx)
 
-  assert.equal(registrations.length, 3)
+  assert.equal(registrations.length, 4)
   assert.equal(registrations[1].path, '/api/toolbox-human/showMain')
   assert.equal(registrations[1].requestBody, 'streaming')
 
@@ -285,7 +285,7 @@ test('apply registers exact Connection routes and disposes them with the plugin'
   assert.deepEqual(await response.json(), { type: 'server-response', rpcId: 'fixture-id', result: { ok: true, value: { opened: true, window: 'main' } } })
   assert.equal(desktop.calls[0].method, 'showMain')
 
-  assert.equal(disposers.length, 3)
+  assert.equal(disposers.length, 4)
   for (const dispose of disposers) dispose()
   assert.ok(registrations.every(route => route.disposed))
 })

@@ -1067,7 +1067,10 @@
         "common_tools": "可依次退出截图、输入法、远程控制、语音和脚本工具后再检测。这个顺序只是排查建议。",
         "windows_key": "微软文档说明，涉及 Windows 键的组合键保留给操作系统。这不能确定具体程序。"
       }
-    }
+    },
+    "retryConnection": "重试连接",
+    "nativeShortcutNotice": "快捷键录入需要原生窗口焦点。请打开独立主窗口，在“偏好设置”中录入快捷键。",
+    "openNativeMain": "打开独立主窗口"
   },
   "feedback": {
     "saved": "已保存到",

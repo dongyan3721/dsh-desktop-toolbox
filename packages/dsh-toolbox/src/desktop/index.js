@@ -6,6 +6,7 @@ import { NativeOwner, hostError } from '../host/native-owner.js';
 import { DesktopAgentAccess } from './agent-access.js';
 import { ToolboxArtifactService } from './artifacts.js';
 import { resolveDesktopDataDir } from './data-dir.js';
+import { validateConsoleRequest } from '../human-entry/console.js';
 
 export const DESKTOP_RUNTIME = Object.freeze({
   executable: 'win32-x64/all-in-one-desktop.exe',
@@ -127,6 +128,12 @@ export class ToolboxDesktopService extends Service {
   }
 
   getAgentAccess(options) { return this.agentAccess.get(options); }
+  async console(payload, { signal } = {}) {
+    const request = validateConsoleRequest(payload);
+    await this.ensureReady(signal);
+    if (!this.owner.capabilities.includes('desktop.console')) throw hostError('UNSUPPORTED', 'Update the desktop executable to use the embedded console');
+    return this.owner.request('desktop.console', request, { signal });
+  }
   agentCall(method, params, options) { return this.agentAccess.call(method, params, options); }
   onAgentAccessChanged(listener) { return this.agentAccess.onChanged(listener); }
 }
