@@ -130,9 +130,13 @@ export class ToolboxDesktopService extends Service {
   getAgentAccess(options) { return this.agentAccess.get(options); }
   async console(payload, { signal } = {}) {
     const request = validateConsoleRequest(payload);
-    await this.ensureReady(signal);
+    if (['snapshot', 'getShortcutPreferences', 'checkShortcut', 'checkAllShortcuts'].includes(request.action)) {
+      signal?.throwIfAborted();
+      if (this.phase === 'starting') await this.launchTask;
+      if (this.phase !== 'ready' || !this.owner?.ready || this.owner.bridge?.isClosed) throw hostError('NATIVE_UNAVAILABLE', 'The toolbox has stopped. Reconnect the console to start it again.');
+    } else await this.ensureReady(signal);
     if (!this.owner.capabilities.includes('desktop.console')) throw hostError('UNSUPPORTED', 'Update the desktop executable to use the embedded console');
-    return this.owner.request('desktop.console', request, { signal });
+    return this.owner.request('desktop.console', request.action === 'reconnect' ? { action: 'snapshot', args: {} } : request, { signal });
   }
   agentCall(method, params, options) { return this.agentAccess.call(method, params, options); }
   onAgentAccessChanged(listener) { return this.agentAccess.onChanged(listener); }

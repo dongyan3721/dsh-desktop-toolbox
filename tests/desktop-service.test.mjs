@@ -37,6 +37,8 @@ test('desktop service loads without tools and settles its owned protocol fixture
     await desktop.owner.handle.terminate();
     await desktop.owner.outcome;
     assert.equal((await desktop.status()).nativeConnected, false);
+    await assert.rejects(desktop.console({ action: 'snapshot', args: {} }), { code: 'NATIVE_UNAVAILABLE' });
+    assert.equal(desktop.owner.instanceId, previousInstance, 'background reads never restart a stopped process');
     await desktop.showMain();
     assert.notEqual(desktop.owner.instanceId, previousInstance);
     await entry.fiber.dispose();

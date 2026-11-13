@@ -14,7 +14,7 @@ export function validateConsoleRequest(payload) {
   const { action } = value;
   const args = value.args;
   switch (action) {
-    case 'snapshot': case 'getShortcutPreferences': case 'checkAllShortcuts': case 'openManual':
+    case 'snapshot': case 'reconnect': case 'getShortcutPreferences': case 'checkAllShortcuts': case 'openManual':
       record(args, []); break;
     case 'setModuleEnabled': case 'setAgentAccess': {
       const grant = action === 'setAgentAccess';

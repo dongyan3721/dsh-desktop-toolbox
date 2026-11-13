@@ -1,4 +1,5 @@
-// Acceptance-only Cordis driver: runs inside the installed dsh CLI, without an LLM request.
+// Historical headless alpha acceptance only, not the current GUI/Agent product.
+// For current five-tool acceptance use beta-profile-smoke.mjs instead.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';

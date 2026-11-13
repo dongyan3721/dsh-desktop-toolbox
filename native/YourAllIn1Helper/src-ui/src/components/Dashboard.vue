@@ -9,10 +9,11 @@
     </header>
     <main class="launcher-content">
       <p v-if="error" class="launcher-error" role="alert">{{ error }}</p>
+      <button v-if="error && embedded" class="retry-button" @click="retryDashboard">{{ t('desktop.retryConnection') }}</button>
       <section v-if="page === 'features'" id="features-page" role="tabpanel" aria-labelledby="features-tab">
         <div class="page-heading"><h2>{{ t('desktop.yourTools') }}</h2><p>{{ t('desktop.featuresHint') }}</p></div>
         <div v-if="!status && !error" class="loading-text" role="status">{{ t('desktop.loading') }}</div>
-        <button v-else-if="!status" class="retry-button" @click="refreshDashboard">{{ t('desktop.retryConnection') }}</button>
+        <button v-else-if="!status && !embedded" class="retry-button" @click="refreshDashboard">{{ t('desktop.retryConnection') }}</button>
         <ModuleManager v-if="status" :modules="status.module_catalog" :opening="opening" @changed="refreshDashboard" @open="openFeature" />
       </section>
       <section v-else id="preferences-page" role="tabpanel" aria-labelledby="preferences-tab">
@@ -46,6 +47,10 @@ let unlistenKernel: (() => void) | undefined;
 let refreshTimer: ReturnType<typeof setInterval> | undefined;
 let refreshing = false;
 let disposed = false;
+async function retryDashboard() {
+  try { await invokeIpc('toolbox_reconnect_console'); await refreshDashboard(); }
+  catch (err) { error.value = err instanceof Error ? err.message : String(err); }
+}
 async function refreshDashboard() {
   if (refreshing) return;
   refreshing = true;

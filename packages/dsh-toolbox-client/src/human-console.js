@@ -101,6 +101,8 @@ function createTransport(connection) {
     active.add(controller)
     try {
       switch (cmd) {
+        case 'toolbox_reconnect_console':
+          return await consoleCall(connection, 'reconnect', {}, controller.signal)
         case 'kernel_get_status': {
           const value = requireRecord(await consoleCall(connection, 'snapshot', {}, controller.signal), '主控台快照')
           const config = requireRecord(value.config, '一般设置')
