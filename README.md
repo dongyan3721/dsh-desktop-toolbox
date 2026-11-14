@@ -26,6 +26,8 @@ In Harness → Plugins → Add plugin, paste the GitHub URL above. The complete 
 
 从旧双包升级：正常退出工具箱，移除 `dsh-toolbox` 和 `dsh-toolbox-client`，再安装完整包。保持原数据路径；卸载保留数据和授权设置。无法热加载的实例需重启 Harness。
 
+Windows 原生功能窗口需要 Microsoft WebView2 Runtime，与原 Windows 版本一致。
+
 这是开发者 beta：macOS `.app` 使用 ad-hoc 签名，尚无 Developer ID 公证。截图仍受 macOS「屏幕与系统音频录制」权限约束，授权必须由使用者决定；插件不会自动申请或绕过系统权限。验收机已有录屏许可，不能据此声称干净系统上的首次授权流程已通过。
 
 ## 五个 Agent 模块

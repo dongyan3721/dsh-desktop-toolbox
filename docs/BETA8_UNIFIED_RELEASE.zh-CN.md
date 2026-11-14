@@ -27,3 +27,9 @@
 - 本地 Node：193 通过，9 项 Windows 专用真实 exe 用例在 Mac 明确跳过。
 - 新增共同交付、缺失 Windows 资源、伪装架构和无安装平台过滤的回归测试。
 - Windows 原生构建 / SDK 验收及最终公开安装结果待本轮实际运行后补充；不提前标为通过。
+
+## 构建中发现并修复的问题
+
+Windows 首次从当前源码构建发现 `IsWindow(HWND)` 与 windows 0.62.2 的签名 `IsWindow(Option<HWND>)` 不符，位置是截图排除窗口的存活检查。已改为 `IsWindow(Some(hwnd))`，随后双方均从原生源码提交 `4f30a6a6296e5a38c03adf38912501428861bbce` 重建。
+
+Mac 重建成功，签名严格校验通过，二进制 SHA-256 仍是 `0480e7e4b0ae9b5fed00d6e4d167ff8cbc7eedea8f96c75294006055e34f3b2c`；该修复位于 Windows cfg 分支。Mac 原生测试：Host 84 通过；OS HAL 21 通过、1 项硬件测试忽略。Node 最新完整回归：194 通过、9 项 Windows 专属 exe 测试跳过。

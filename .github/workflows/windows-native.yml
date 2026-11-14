@@ -103,7 +103,14 @@ jobs:
       - name: Accept the public complete bundle
         env:
           TOOLBOX_BUNDLE_REF: ${{ inputs.bundle_ref }}
-        run: ./scripts/accept-unified-windows.ps1 -BundleRef $env:TOOLBOX_BUNDLE_REF
+        run: |
+          $index = 0
+          foreach ($ref in ($env:TOOLBOX_BUNDLE_REF -split '\r?\n')) {
+            if (-not $ref.Trim()) { continue }
+            ./scripts/accept-unified-windows.ps1 -BundleRef $ref.Trim() -CaseName "win-public-$index"
+            $index++
+          }
+          if ($index -eq 0) { throw 'At least one public source is required' }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: always()
         with:
