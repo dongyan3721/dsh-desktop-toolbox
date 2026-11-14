@@ -36,7 +36,7 @@ export async function bundleDesktopMacos({
 
   const binary = resolve(root, binaryPath);
   const binaryStat = await stat(binary);
-  if (!binaryStat.isFile() || (binaryStat.mode & 0o111) === 0) {
+  if (!binaryStat.isFile() || (process.platform !== 'win32' && (binaryStat.mode & 0o111) === 0)) {
     throw new Error(`macOS desktop binary must be an executable file: ${binary}`);
   }
   const bytes = await readFile(binary);

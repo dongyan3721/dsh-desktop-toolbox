@@ -72,7 +72,7 @@ test('macOS architectures bundle independently and preserve Windows resources', 
     const diskManifest = JSON.parse(await readFile(join(resourceDir, 'desktop-manifest.json'), 'utf8'));
 
     assert.deepEqual(bundledBinary, bytes);
-    assert.equal((await stat(bundledPath)).mode & 0o111, 0o111);
+    if (process.platform !== 'win32') assert.equal((await stat(bundledPath)).mode & 0o111, 0o111);
     assert.equal(await readFile(join(bundledApp, 'Contents/Info.plist'), 'utf8'), plist);
     assert.equal(await readFile(join(bundledApp, 'Contents/Resources/icon.icns'), 'utf8'), 'synthetic icon');
     assert.deepEqual(manifest, {
@@ -112,7 +112,7 @@ test('unsupported platforms and missing binaries fail without creating resources
   await assert.rejects(stat(join(f.root, 'packages/dsh-toolbox/resources/darwin-arm64')), /ENOENT/);
 });
 
-test('packaging rejects a non-executable binary before writing resources', async t => {
+test('packaging rejects a non-executable binary before writing resources', { skip: process.platform === 'win32' && 'NTFS has no POSIX executable mode' }, async t => {
   const f = await fixture(t);
   const binaryPath = join(f.binaryDir, 'not executable');
   await writeFile(binaryPath, 'synthetic');

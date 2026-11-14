@@ -35,6 +35,11 @@ function extract(name, required = true) {
   for (const dep of Object.keys(pkg.optionalDependencies || {})) extract(dep, false);
 }
 for (const suffix of ['cordis','schemastery','cordis-plugin-loader','dsh-tools','dsh-system-prompt','dsh-tool-executor-native','dsh-subprocess-local','dsh-fs-local','dsh-fs-sandbox','dsh-sandbox-policy','dsh-session-projection','dsh-attachment-local','dsh-client-connection','dsh-client-ui-sidebar','dsh-tool-fs']) extract(`@deepseek-ai/${suffix}`);
+for (const suffix of ['dsh-client-connection', 'dsh-client-ui-sidebar', 'dsh-tool-fs']) {
+  const name = `@deepseek-ai/${suffix}`;
+  const target = path.join(root, 'vendor/harness-reference', name);
+  if (!fs.existsSync(target)) copy(path.join(base, name), target);
+}
 const link = path.join(root, 'node_modules');
 if (!fs.existsSync(link)) fs.symlinkSync(destination, link, process.platform === 'win32' ? 'junction' : 'dir');
 else if (!fs.lstatSync(link).isSymbolicLink() || fs.realpathSync(link) !== fs.realpathSync(destination)) throw new Error('Refusing to replace existing node_modules');
