@@ -1,10 +1,35 @@
 {
-  "name": "dsh-toolbox-workspace",
+  "name": "dsh-toolbox-bundle",
+  "version": "0.1.0-beta.6",
+  "description": "Complete human desktop toolbox for DeepSeek Harness (Windows x64)",
   "private": true,
   "license": "MIT",
   "type": "module",
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "main": "./distribution/lib/human-entry/host.js",
+  "exports": {
+    ".": "./distribution/lib/human-entry/host.js",
+    "./desktop": "./distribution/lib/desktop/index.js",
+    "./agent": "./distribution/lib/agent/index.js",
+    "./client": "./distribution/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["distribution", "cordis.patch.yml", "README.md", "LICENSE"],
+  "dsh": {
+    "bundle": {"patch": "./cordis.patch.yml"},
+    "client": {"platform": "web", "inject": []}
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.1.0",
+    "@deepseek-ai/dsh-tools": "0.2.2-rc.1 || 0.2.2-rc.3",
+    "@deepseek-ai/schemastery": "~3.19.0",
+    "@deepseek-ai/dsh-subprocess": "0.2.2-rc.1 || 0.2.2-rc.3",
+    "@deepseek-ai/dsh-sandbox": "0.2.2-rc.1 || 0.2.2-rc.3"
+  },
   "scripts": {
     "build": "node scripts/build.mjs",
+    "build:bundle": "node scripts/bundle-github.mjs",
     "test": "node --test tests/*.test.mjs packages/dsh-toolbox/tests/*.test.mjs",
     "demo": "node scripts/demo.mjs"
   }

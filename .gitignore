@@ -12,3 +12,6 @@ vendor/
 .worktrees/
 packages/dsh-toolbox-client/.embedded-build/
 packages/dsh-toolbox/resources/
+# The Git URL entry deliberately ships prebuilt runtime files.
+!distribution/lib/
+!distribution/lib/**

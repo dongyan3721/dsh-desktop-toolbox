@@ -1,0 +1,9 @@
+# One complete installation; the bare package row owns the browser Client half.
+# Remove the former dsh-toolbox + dsh-toolbox-client bundles before switching.
+- insert:
+    - id: toolbox-desktop
+      name: dsh-toolbox-bundle/desktop
+    - id: toolbox-agent
+      name: dsh-toolbox-bundle/agent
+    - id: toolbox-human-entry
+      name: dsh-toolbox-bundle

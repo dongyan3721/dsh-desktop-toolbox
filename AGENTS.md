@@ -1,5 +1,11 @@
 # DSH Toolbox collaboration rules
 
+## Commit attribution and URL installation, 2026-11-14
+
+Codex commits must include `Co-authored-by: Codex <codex@openai.com>`, as authorized by the user. Other agents may add their own co-author trailer only when their official attribution email is verified; never invent one. Preserve the repository-local user email `2914566893@qq.com`.
+
+The next release adds a self-contained root `dsh-toolbox-bundle` for GitHub URL and single tarball installation. Host and Client development packages remain separate. Codex owns the root manifest, generated `distribution/`, packaging and isolated installation acceptance. Do not change historical tags/artifacts or weaken pnpm's build/exotic-dependency policy.
+
 ## Current assignment: beta.5 feedback, 2026-11-14
 
 The user's latest assignment replaces the previous app/model ownership for this round: all three delegates are existing Zed threads, named Copilot, Grok Build, and Claude Code. Do not start agents in Cursor, CodeBuddy, Antigravity, or Qoder, and do not change the user's selected models/modes. Historical worktree/branch names stay unchanged. Read `docs/BETA5_FEEDBACK_PLAN.zh-CN.md` and the corresponding `docs/tasks/ZED_B5_*.md`; those files override earlier task ownership for this round. Copilot uses `.worktrees/antigravity`, Grok Build uses `.worktrees/cursor`, and Claude Code uses `.worktrees/zed`. Codex alone coordinates shared contracts, Host/native console transport, integration, real desktop tests, and packaging on main. Installed Harness is now user-reported `0.2.2-rc.3`; the local vendored SDK is still rc.1 and does not prove rc.3 compatibility. Preserve beta.4 and all earlier release artifacts/tags.

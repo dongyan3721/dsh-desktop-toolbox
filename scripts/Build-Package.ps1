@@ -4,7 +4,7 @@ $buildRoot = Split-Path $PSScriptRoot -Parent
 Push-Location $buildRoot
 try {
     $releaseVersion = (Get-Content packages/dsh-toolbox/package.json -Raw | ConvertFrom-Json).version
-    foreach ($releaseName in @('dsh-toolbox', 'dsh-toolbox-client')) {
+    foreach ($releaseName in @('dsh-toolbox', 'dsh-toolbox-client', 'dsh-toolbox-bundle')) {
         if (Test-Path -LiteralPath (Join-Path $buildRoot "dist/$releaseName-$releaseVersion.tgz")) {
             throw "Release archive already exists: $releaseName-$releaseVersion.tgz. Use a new version instead of replacing an artifact."
         }
@@ -28,4 +28,8 @@ try {
         pnpm.cmd pack --pack-destination ../../dist
         if ($LASTEXITCODE -ne 0) { throw 'Client package creation failed' }
     } finally { Pop-Location }
+    node scripts/bundle-github.mjs
+    if ($LASTEXITCODE -ne 0) { throw 'Complete GitHub Bundle assembly failed' }
+    pnpm.cmd pack --pack-destination dist
+    if ($LASTEXITCODE -ne 0) { throw 'Complete Bundle package creation failed' }
 } finally { Pop-Location }
