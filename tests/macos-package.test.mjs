@@ -9,6 +9,14 @@ import { bundleDesktopMacos } from '../scripts/bundle-desktop-macos.mjs';
 const workspace = fileURLToPath(new URL('../', import.meta.url));
 const sourceRevision = 'a'.repeat(40);
 
+function syntheticMachO(architecture) {
+  const header = Buffer.alloc(32);
+  header.writeUInt32LE(0xfeedfacf, 0);
+  header.writeUInt32LE(architecture === 'arm64' ? 0x0100000c : 0x01000007, 4);
+  header.writeUInt32LE(2, 12);
+  return Buffer.concat([header, Buffer.from(`synthetic ${architecture} fixture`)]);
+}
+
 async function fixture(t) {
   const tempRoot = await mkdtemp(join(workspace, '.tmp', 'macos package test '));
   t.after(() => rm(tempRoot, { recursive: true, force: true }));
@@ -40,7 +48,7 @@ test('macOS architectures bundle independently and preserve Windows resources', 
   const outputs = new Map();
 
   for (const [platform, architecture] of [['darwin-arm64', 'arm64'], ['darwin-x64', 'x64']]) {
-    const bytes = Buffer.from(`synthetic ${architecture} desktop executable`);
+    const bytes = syntheticMachO(architecture);
     const binaryPath = join(f.binaryDir, `${platform} binary`);
     await writeFile(binaryPath, bytes, { mode: 0o755 });
     await chmod(binaryPath, 0o755);
@@ -106,5 +114,15 @@ test('packaging rejects a non-executable binary before writing resources', async
     binaryPath,
     sourceRevision,
   }), /must be an executable file/);
+  await assert.rejects(stat(join(f.root, 'packages/dsh-toolbox/resources/darwin-arm64')), /ENOENT/);
+});
+
+test('packaging refuses to label an Intel executable as Apple Silicon', async t => {
+  const f = await fixture(t);
+  const binaryPath = join(f.binaryDir, 'wrong architecture');
+  await writeFile(binaryPath, syntheticMachO('x64'), { mode: 0o755 });
+  await assert.rejects(bundleDesktopMacos({
+    root: f.root, platform: 'darwin-arm64', binaryPath, sourceRevision,
+  }), /Expected a arm64 Mach-O executable/);
   await assert.rejects(stat(join(f.root, 'packages/dsh-toolbox/resources/darwin-arm64')), /ENOENT/);
 });

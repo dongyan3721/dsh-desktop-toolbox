@@ -41,6 +41,11 @@ export async function bundleDesktopMacos({
   }
   const bytes = await readFile(binary);
   if (bytes.length === 0) throw new Error(`macOS desktop binary is empty: ${binary}`);
+  const cpuType = architecture === 'arm64' ? 0x0100000c : 0x01000007;
+  if (bytes.length < 32 || bytes.readUInt32LE(0) !== 0xfeedfacf ||
+      bytes.readUInt32LE(4) !== cpuType || bytes.readUInt32LE(12) !== 2) {
+    throw new Error(`Expected a ${architecture} Mach-O executable: ${binary}`);
+  }
 
   const revision = sourceRevision ?? nativeSourceRevision(root);
   if (!/^[\da-f]{40,64}$/i.test(revision)) {
