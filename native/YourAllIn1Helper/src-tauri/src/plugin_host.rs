@@ -123,6 +123,7 @@ fn finish_parent_exit(control: &TauriDesktopControl) {
     }
 }
 
+#[cfg(windows)]
 async fn listen(
     launch: PluginLaunch,
     control: Arc<TauriDesktopControl>,
@@ -174,6 +175,60 @@ async fn listen(
                         tracing::warn!("Rejected a control client that is not the parent process");
                     }
                 }
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn listen(
+    launch: PluginLaunch,
+    control: Arc<TauriDesktopControl>,
+    mut parent_exit: watch::Receiver<bool>,
+    ready: watch::Receiver<bool>,
+) -> Result<(), String> {
+    let listener = transport::SocketListener::bind(&launch.pipe_name)
+        .map_err(|_| "unix socket could not be created".to_string())?;
+    loop {
+        if *parent_exit.borrow() {
+            finish_parent_exit(&control);
+            return Ok(());
+        }
+        tokio::select! {
+            biased;
+            changed = parent_exit.changed() => {
+                if changed.is_err() || *parent_exit.borrow() {
+                    finish_parent_exit(&control);
+                    return Ok(());
+                }
+            }
+            accepted = listener.accept() => {
+                let stream = match accepted {
+                    Ok(stream) => stream,
+                    Err(_) => return Err("unix socket connection failed".to_string()),
+                };
+                if transport::accept_peer(&stream, launch.parent_pid) {
+                    let (reader, writer) = tokio::io::split(stream);
+                    let stop = serve_desktop_control(
+                        reader,
+                        writer,
+                        Arc::clone(&control),
+                        launch.instance_id.clone(),
+                        parent_exit.clone(),
+                        ready.clone(),
+                    )
+                    .await;
+                    tracing::info!(?stop, "Desktop control session ended");
+                    if matches!(
+                        stop,
+                        crate::desktop_control::ControlStop::Disconnected
+                            | crate::desktop_control::ControlStop::ProtocolFault
+                    ) {
+                        finish_parent_exit(&control);
+                    }
+                    return Ok(());
+                }
+                tracing::warn!("Rejected a control client that is not the parent process");
             }
         }
     }

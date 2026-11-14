@@ -3,7 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use app_core::{AppConfig, MODULE_CATALOG};
+#[cfg(windows)]
 use dsh_bridge::transport::expected_pipe_name;
+#[cfg(target_os = "macos")]
+use dsh_bridge::transport::validate_socket_path;
 
 pub const AGENT_DATA_METHODS: &[&str] = &[
     "agent.screenshot.monitors",
@@ -157,8 +160,15 @@ fn parse_plugin_launch(args: &[String]) -> Result<PluginLaunch, String> {
     let instance_id = instance_id.ok_or("missing --instance-id")?;
     uuid::Uuid::parse_str(&instance_id).map_err(|_| "instance id must be a UUID".to_string())?;
     let pipe_name = pipe_name.ok_or("missing --pipe-name")?;
+    #[cfg(windows)]
     if pipe_name != expected_pipe_name(&instance_id) {
         return Err("pipe name must be \\\\.\\pipe\\dsh-toolbox-<instance-id>".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    validate_socket_path(&pipe_name)?;
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        return Err("pipe name is not supported on this platform".to_string());
     }
     let data_dir = prepare_data_dir(&data_dir.ok_or("missing --data-dir")?)?;
     let parent_pid = parent_pid.ok_or("missing --parent-pid")?;
@@ -280,11 +290,48 @@ mod tests {
 
     const INSTANCE: &str = "11111111-1111-4111-8111-111111111111";
 
+    fn control_endpoint() -> String {
+        #[cfg(windows)]
+        {
+            expected_pipe_name(INSTANCE)
+        }
+        #[cfg(target_os = "macos")]
+        {
+            macos_test_endpoint()
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn macos_test_endpoint() -> String {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static SEQ: AtomicU32 = AtomicU32::new(0);
+        let tmp = std::env::var("TMPDIR").expect("TMPDIR");
+        let tmp = tmp.trim_end_matches('/');
+        for _ in 0..64 {
+            let n = SEQ.fetch_add(1, Ordering::Relaxed);
+            let token = format!(
+                "{:06x}",
+                (std::process::id().wrapping_mul(31).wrapping_add(n)) & 0x00ff_ffff
+            );
+            let dir = std::path::Path::new(tmp).join(format!("dsh-{token}"));
+            if dir.exists() {
+                continue;
+            }
+            std::fs::create_dir(&dir).expect("endpoint directory");
+            let mut perms = std::fs::metadata(&dir).unwrap().permissions();
+            perms.set_mode(0o700);
+            std::fs::set_permissions(&dir, perms).unwrap();
+            return format!("{tmp}/dsh-{token}/s");
+        }
+        panic!("could not create a socket directory");
+    }
+
     fn plugin_args(dir: &Path) -> Vec<String> {
         vec![
             "--toolbox-plugin".into(),
             "--pipe-name".into(),
-            expected_pipe_name(INSTANCE),
+            control_endpoint(),
             "--instance-id".into(),
             INSTANCE.into(),
             "--data-dir".into(),

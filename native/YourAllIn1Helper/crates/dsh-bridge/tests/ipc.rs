@@ -1,3 +1,4 @@
+#![cfg(windows)]
 //! Process-level checks against the real `dsh-toolbox-native` binary and a D: data directory.
 
 use std::io::Read;

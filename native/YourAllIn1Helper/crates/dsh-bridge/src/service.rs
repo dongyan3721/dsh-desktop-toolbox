@@ -7,7 +7,9 @@ use std::sync::Arc;
 use app_core::{AppKernel, AppKernelBuilder, AppModule, CoreError, MODULE_CATALOG};
 use mod_sticky_note::{ClosedNoteSave, StickyNoteModule, StickyNoteRecord};
 use serde_json::{json, Map, Value};
-use crate::protocol::{expected_pipe_name, PROTOCOL_VERSION};
+#[cfg(windows)]
+use crate::protocol::expected_pipe_name;
+use crate::protocol::PROTOCOL_VERSION;
 
 const MAX_TITLE_CHARS: usize = 500;
 const MAX_CONTENT_CHARS: usize = 1_048_576;
@@ -772,8 +774,15 @@ pub fn parse_config(args: &[String]) -> Result<BridgeConfig, String> {
     let instance_id = instance_id.ok_or("missing --instance-id")?;
     uuid::Uuid::parse_str(&instance_id).map_err(|_| "instance id must be a UUID".to_string())?;
     let pipe_name = pipe_name.ok_or("missing --pipe-name")?;
+    #[cfg(windows)]
     if pipe_name != expected_pipe_name(&instance_id) {
         return Err("pipe name must be \\\\.\\pipe\\dsh-toolbox-<instance-id>".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    crate::macutil::validate_socket_path(&pipe_name)?;
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        return Err("pipe name is not supported on this platform".to_string());
     }
     let data_dir = prepare_directory(&data_dir.ok_or("missing --data-dir")?, "data directory")?;
     let parent_pid = parent_pid.ok_or("missing --parent-pid")?;
@@ -1091,7 +1100,18 @@ fn has_forbidden_control(value: &str, multiline: bool) -> bool {
 }
 
 pub fn usage_text() -> &'static str {
-    "dsh-toolbox-native --pipe-name \\\\.\\pipe\\dsh-toolbox-<uuid> --instance-id <uuid> --data-dir <absolute path> --parent-pid <pid> [--allow-read-root <absolute directory>] [--allow-write-root <absolute directory>]"
+    #[cfg(windows)]
+    {
+        "dsh-toolbox-native --pipe-name \\\\.\\pipe\\dsh-toolbox-<uuid> --instance-id <uuid> --data-dir <absolute path> --parent-pid <pid> [--allow-read-root <absolute directory>] [--allow-write-root <absolute directory>]"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "dsh-toolbox-native --pipe-name <absolute>/dsh-<6 alphanumerics>/s --instance-id <uuid> --data-dir <absolute path> --parent-pid <pid> [--allow-read-root <absolute directory>] [--allow-write-root <absolute directory>]"
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        "private IPC is not supported on this platform"
+    }
 }
 
 pub fn run_from_env() -> i32 {
@@ -1117,7 +1137,13 @@ pub fn run_from_env() -> i32 {
             return 1;
         }
     };
-    match runtime.block_on(crate::winutil::serve(config)) {
+    #[cfg(windows)]
+    let served = runtime.block_on(crate::winutil::serve(config));
+    #[cfg(target_os = "macos")]
+    let served = runtime.block_on(crate::macutil::serve(config));
+    #[cfg(not(any(windows, target_os = "macos")))]
+    let served: Result<(), String> = Err("private IPC is not supported on this platform".to_string());
+    match served {
         Ok(()) => 0,
         Err(err) => {
             eprintln!("dsh-toolbox-native: {err}");
@@ -1517,7 +1543,9 @@ mod tests {
         assert!(!outside.join("leak.png").exists());
         std::fs::remove_dir(&write_junction).unwrap();
 
+        #[cfg(windows)]
         let symlink = read.join("secret-link.png");
+        #[cfg(windows)]
         match std::os::windows::fs::symlink_file(&outside_file, &symlink) {
             Ok(()) => {
                 assert!(matches!(

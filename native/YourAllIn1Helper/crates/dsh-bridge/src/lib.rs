@@ -10,18 +10,28 @@ mod service;
 mod session;
 #[cfg(test)]
 mod test_fixture;
+#[cfg(windows)]
 mod winutil;
+#[cfg(target_os = "macos")]
+mod macutil;
+#[cfg(not(any(windows, target_os = "macos")))]
+compile_error!("dsh-bridge private IPC supports only Windows named pipes and macOS Unix sockets");
 
 pub use service::run_from_env;
 
-/// Framing and Windows pipe primitives shared with the desktop control pipe.
+/// Framing and private IPC primitives shared with the desktop control endpoint.
 /// The desktop host must not start `BridgeService` or a second kernel.
 pub mod transport {
     pub use crate::protocol::{
         encode_frame, expected_pipe_name, parse_message, ClientMessage, FrameDecoder,
         ProtocolFault, MAX_FRAME_LEN, PROTOCOL_VERSION,
     };
+    #[cfg(windows)]
     pub use crate::winutil::{
         client_process_id, create_listening_pipe, watch_parent, InstanceLock,
+    };
+    #[cfg(target_os = "macos")]
+    pub use crate::macutil::{
+        accept_peer, validate_socket_path, watch_parent, InstanceLock, SocketListener,
     };
 }
