@@ -96,7 +96,11 @@ async function run(ctx) {
     await waitFor(() => names().includes('toolbox_notes'), 'Notes tool not registered');
     const items = (await tool('toolbox_notes', { action: 'search', query: 'BETA8-UNIFIED-NOTE' })).value.items;
     assert.equal(items.length, 1);
-    assert.equal((await tool('toolbox_notes', { action: 'read', id: items[0].id })).value.content_md, 'BETA8-UNIFIED persisted 中文与 Emoji 🧪');
+    const saved = await waitFor(async () => {
+      try { return await desktop.agentCall('agent.notes.read', { id: items[0].id }); }
+      catch (error) { if (['UNAVAILABLE', 'BUSY'].includes(error.code)) return false; throw error; }
+    }, 'Restored original note editor did not become ready');
+    assert.equal(saved.content_md, 'BETA8-UNIFIED persisted 中文与 Emoji 🧪');
     await grant('sticky_note', false);
     await record({ event: 'persisted-after-restart', noteId: items[0].id });
     return;
