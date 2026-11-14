@@ -33,3 +33,5 @@
 Windows 首次从当前源码构建发现 `IsWindow(HWND)` 与 windows 0.62.2 的签名 `IsWindow(Option<HWND>)` 不符，位置是截图排除窗口的存活检查。已改为 `IsWindow(Some(hwnd))`，随后双方均从原生源码提交 `4f30a6a6296e5a38c03adf38912501428861bbce` 重建。
 
 Mac 重建成功，签名严格校验通过，二进制 SHA-256 仍是 `0480e7e4b0ae9b5fed00d6e4d167ff8cbc7eedea8f96c75294006055e34f3b2c`；该修复位于 Windows cfg 分支。Mac 原生测试：Host 84 通过；OS HAL 21 通过、1 项硬件测试忽略。Node 最新完整回归：194 通过、9 项 Windows 专属 exe 测试跳过。
+
+Windows 当前源码编译已在 CI run `43613256520` 通过，随后进入原生回归和 SDK 阶段。首次 run `43612390958` 的类型错误不计通过；最终结果以完整成功运行及实际安装验收为准。
