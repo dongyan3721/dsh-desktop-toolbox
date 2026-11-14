@@ -2,6 +2,8 @@
 
 日期：2026-11-14。目标为本机 `E:\deepseek-harness\DeepSeek Harness.exe`，安装包内 `@deepseek-ai/dsh-plugin-manager` 为 `0.2.2-rc.3`，自带 pnpm 为 `11.28.5`。
 
+后续实施：beta.6 已新增自包含的根 Bundle，并通过真实 GitHub commit URL 安装与运行。本研究下文保留 beta.5 当时的判断；最新支持范围与证据见 [beta.6 验收](BETA6_URL_INSTALL_ACCEPTANCE.zh-CN.md)。
+
 ## 结论
 
 - beta.5 已能通过 **GitHub Release 安装包的 HTTPS 链接**安装，无需先手动下载。本轮在独立 D 盘 Profile 实测成功。

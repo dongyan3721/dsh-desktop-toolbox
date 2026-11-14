@@ -1,6 +1,6 @@
 # beta.6 URL 安装验收
 
-日期：2026-11-14。状态：本地完整包通过；远端 GitHub 安装将在预构建入口推送后继续验证，当前不据此宣布远端通过。
+日期：2026-11-14。状态：本地完整包、旧双包切换和真实 GitHub commit URL 安装均通过。固定 tag 与 Release URL 在发布阶段继续验证。
 
 ## 构建
 
@@ -28,12 +28,22 @@
 ## 卸载、重装和切换
 
 - 完整包卸载前后，合成 `app.db` 的 SHA256 完全相同；重装完整包后的真实运行时 Driver 通过并正常退出。
-- 旧双包切换测试在同一隔离 Profile 执行：完整包移除 → 安装冻结 beta.5 双包 → 移除两个旧包 → 安装完整 beta.6 → 核对三行各一份 → 真实运行时 Driver。结果完成后补记。
+- 旧双包切换测试在同一隔离 Profile 执行：完整包移除 → 安装冻结 beta.5 双包 → 移除两个旧包 → 安装完整 beta.6 → 核对三行各一份 → 真实运行时 Driver。通过，退出码 0；合成便笺标题和正文在切换后仍完全一致。
 - 测试 Driver 为 `scripts/beta6-install-acceptance.mjs`，不进入产品安装包。首次 Driver 误用历史文档中的 `webPlugins` 服务名而处于 pending；读取 rc.3 编译实现后改为实际的 `clientModules`，后续运行通过。这是验收脚本修正，未改变产品授权或客户端代码。
 
-## 后续远端验证
+## 实际 GitHub 远端验证
 
-预构建入口提交并推送后，以完整 commit 固定的实际 GitHub spec 安装到独立 Profile，验证 GitHub 获取、锁文件 commit、实际模块图、完整性和退出清理。然后验证固定版本 tag 和单个 Release `.tgz` URL。不得把本地 `.tgz` 通过当作上述远端链路通过。
+在全新的 `github-remote/harness-home` 和 `github-remote/pnpm-store` 中，向官方 CLI 直接传入：
+
+```text
+https://github.com/dongyan3721/dsh-desktop-toolbox#641023d0e35c521cfbc406ea56a18568eadac249
+```
+
+安装通过，pnpm 将其记录为 `github:` spec，锁文件实际下载地址为 `https://codeload.github.com/dongyan3721/dsh-desktop-toolbox/tar.gz/641023d0e35c521cfbc406ea56a18568eadac249`。没有复用本地包安装来源、忽略脚本开关、构建白名单或策略豁免。pnpm 给出宿主 peer 提示，退出码 0。
+
+随后用实际 rc.3 Web 运行时加载该远端安装，Driver 通过：版本 beta.6、30 文件完整性通过、一个 Client、原生进程已连接、五模块默认拒绝；`appExit(0)` 后退出码 0。日志在 `github-remote/install-github.log` 与 `github-remote/acceptance-github.log`。
+
+固定版本 tag 和单个 Release `.tgz` URL 在发布阶段继续验证，不能将上面的 commit spec 通过替代二者的证据。
 
 ## 范围
 
