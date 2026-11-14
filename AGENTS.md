@@ -1,5 +1,23 @@
 # DSH Toolbox collaboration rules
 
+## Current macOS exploration, 2026-11-14 (supersedes Windows assignment)
+
+The user's latest assignment authorizes all six existing Zed ACP threads (Zed,
+Antigravity, Qoder, Cursor, Copilot, OpenCode), without changing their selected
+models or modes. Use independent worktrees and `codex/` branches on this Mac.
+The integration root is `/Users/santa_antilles/PycharmProjects/dsh-desktop-toolbox`;
+the independent desktop repository `/Users/santa_antilles/Desktop/your_all_in_one`
+is a read-only comparison input for this round. See `docs/MACOS_EXPLORATION.zh-CN.md`
+and `docs/tasks/MACOS_*.md` for current assignments. Previous beta.5 ownership and
+D/E-drive environment requirements below are historical for this round.
+
+On macOS source `scripts/use-project-environment.sh` before builds/tests. Use the
+installed Harness read-only and a workspace-local isolated DSH_HOME for acceptance.
+Do not read credentials/personal databases or mutate the everyday Harness profile.
+Codex owns shared contracts, Host lifecycle, integration, real desktop tests and
+root packaging. Delegates perform synthetic/non-GUI tests only. Preserve all
+historical artifacts/tags and the existing pnpm policy.
+
 ## Commit attribution and URL installation, 2026-11-14
 
 Codex commits must include `Co-authored-by: Codex <codex@openai.com>`, as authorized by the user. Other agents may add their own co-author trailer only when their official attribution email is verified; never invent one. Preserve the repository-local user email `2914566893@qq.com`.
