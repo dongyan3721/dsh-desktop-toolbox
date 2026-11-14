@@ -10,7 +10,7 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const target = `darwin-${process.arch}`;
 const resources = join(root, 'packages/dsh-toolbox/resources', target);
 const manifest = JSON.parse(await readFile(join(resources, 'desktop-manifest.json'), 'utf8'));
-const bytes = await readFile(join(resources, 'all-in-one-desktop'));
+const bytes = await readFile(join(resources, 'All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop'));
 if (manifest.runtime !== 'desktop' || manifest.platform !== 'darwin' || manifest.architecture !== process.arch || manifest.protocolVersion !== 1
   || manifest.sha256 !== createHash('sha256').update(bytes).digest('hex')) throw new Error('Invalid macOS desktop manifest');
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));

@@ -37,7 +37,7 @@
 
 manifest 必须包含 `runtime:"desktop"`、`protocolVersion:1`、本机 `platform`/`architecture` 和二进制 `sha256`。启动前校验；之后仍要求真正的 v1 握手、桌面 status 和必要 capability。app version 可以独立变化，不要求与插件版本相同。单独使用 `nativeExecutable` 保留为本地开发覆盖；它不提供发行文件完整性校验。
 
-默认资源保持按平台选择：Windows `win32-x64/*.exe` 使用原 manifest；macOS 使用 `darwin-arm64/` 或 `darwin-x64/` 下各自的二进制和 manifest。缺少目标或资源必须失败，不回退运行 Windows 文件。本轮不把现有 Windows beta.6 根包的安装限制改成“macOS 已支持”。
+默认资源保持按平台选择：Windows `win32-x64/*.exe` 使用原 manifest；macOS 使用 `darwin-arm64/` 或 `darwin-x64/` 下各自的 `All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop` 和同架构目录中的 manifest。必须保留整个 `.app` 的 Info.plist、图标与可执行权限，裸 Mach-O 不足以提供正常的 macOS 应用身份。缺少目标或资源必须失败，不回退运行 Windows 文件。本轮不把现有 Windows beta.6 根包的安装限制改成“macOS 已支持”。
 
 ## 生命周期与数据
 

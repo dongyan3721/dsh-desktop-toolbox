@@ -49,7 +49,13 @@ test('macOS architectures bundle independently and preserve Windows resources', 
 
   for (const [platform, architecture] of [['darwin-arm64', 'arm64'], ['darwin-x64', 'x64']]) {
     const bytes = syntheticMachO(architecture);
-    const binaryPath = join(f.binaryDir, `${platform} binary`);
+    const app = join(f.binaryDir, platform, 'All-in-One Toolbox.app');
+    await mkdir(join(app, 'Contents/MacOS'), { recursive: true });
+    await mkdir(join(app, 'Contents/Resources'), { recursive: true });
+    const plist = '<plist><dict><key>CFBundleExecutable</key><string>all-in-one-desktop</string></dict></plist>';
+    await writeFile(join(app, 'Contents/Info.plist'), plist);
+    await writeFile(join(app, 'Contents/Resources/icon.icns'), 'synthetic icon');
+    const binaryPath = join(app, 'Contents/MacOS/all-in-one-desktop');
     await writeFile(binaryPath, bytes, { mode: 0o755 });
     await chmod(binaryPath, 0o755);
 
@@ -60,11 +66,15 @@ test('macOS architectures bundle independently and preserve Windows resources', 
       sourceRevision,
     });
     const resourceDir = join(f.root, 'packages/dsh-toolbox/resources', platform);
-    const bundledBinary = await readFile(join(resourceDir, 'all-in-one-desktop'));
+    const bundledApp = join(resourceDir, 'All-in-One Toolbox.app');
+    const bundledPath = join(bundledApp, 'Contents/MacOS/all-in-one-desktop');
+    const bundledBinary = await readFile(bundledPath);
     const diskManifest = JSON.parse(await readFile(join(resourceDir, 'desktop-manifest.json'), 'utf8'));
 
     assert.deepEqual(bundledBinary, bytes);
-    assert.equal((await stat(join(resourceDir, 'all-in-one-desktop'))).mode & 0o111, 0o111);
+    assert.equal((await stat(bundledPath)).mode & 0o111, 0o111);
+    assert.equal(await readFile(join(bundledApp, 'Contents/Info.plist'), 'utf8'), plist);
+    assert.equal(await readFile(join(bundledApp, 'Contents/Resources/icon.icns'), 'utf8'), 'synthetic icon');
     assert.deepEqual(manifest, {
       runtime: 'desktop',
       pluginVersion: '0.1.0-test',
@@ -125,4 +135,13 @@ test('packaging refuses to label an Intel executable as Apple Silicon', async t 
     root: f.root, platform: 'darwin-arm64', binaryPath, sourceRevision,
   }), /Expected a arm64 Mach-O executable/);
   await assert.rejects(stat(join(f.root, 'packages/dsh-toolbox/resources/darwin-arm64')), /ENOENT/);
+});
+
+test('packaging rejects a bare executable without its macOS application identity', async t => {
+  const f = await fixture(t);
+  const binaryPath = join(f.binaryDir, 'bare binary');
+  await writeFile(binaryPath, syntheticMachO('arm64'), { mode: 0o755 });
+  await assert.rejects(bundleDesktopMacos({
+    root: f.root, platform: 'darwin-arm64', binaryPath, sourceRevision,
+  }), /must belong to its.*app bundle/);
 });

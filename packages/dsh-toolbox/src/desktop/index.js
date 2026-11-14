@@ -13,8 +13,8 @@ export const DESKTOP_RUNTIME = Object.freeze({
   manifest: 'desktop-manifest.json',
   manifestTag: 'desktop',
   targets: Object.freeze({
-    'darwin-arm64': Object.freeze({ executable: 'darwin-arm64/all-in-one-desktop', manifest: 'darwin-arm64/desktop-manifest.json' }),
-    'darwin-x64': Object.freeze({ executable: 'darwin-x64/all-in-one-desktop', manifest: 'darwin-x64/desktop-manifest.json' }),
+    'darwin-arm64': Object.freeze({ executable: 'darwin-arm64/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop', manifest: 'darwin-arm64/desktop-manifest.json' }),
+    'darwin-x64': Object.freeze({ executable: 'darwin-x64/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop', manifest: 'darwin-x64/desktop-manifest.json' }),
   }),
   flags: Object.freeze(['--toolbox-plugin']),
   shutdownMethod: 'desktop.shutdown',

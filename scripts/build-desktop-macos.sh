@@ -65,5 +65,10 @@ cargo build \
   --target "$cargo_target" \
   -j2
 
-binary="$CARGO_TARGET_DIR/$cargo_target/release/all-in-one-desktop"
+(
+  cd "$project_root/native/YourAllIn1Helper"
+  node src-ui/node_modules/@tauri-apps/cli/tauri.js bundle \
+    --bundles app --target "$cargo_target" --ci --no-sign --no-binary-patching
+)
+binary="$CARGO_TARGET_DIR/$cargo_target/release/bundle/macos/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop"
 node "$project_root/scripts/bundle-desktop-macos.mjs" "$platform" "$binary"

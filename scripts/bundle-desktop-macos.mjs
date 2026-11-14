@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { cp, lstat, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const projectRoot = resolve(fileURLToPath(new URL('../', import.meta.url)));
@@ -46,6 +46,11 @@ export async function bundleDesktopMacos({
       bytes.readUInt32LE(4) !== cpuType || bytes.readUInt32LE(12) !== 2) {
     throw new Error(`Expected a ${architecture} Mach-O executable: ${binary}`);
   }
+  const appBundle = resolve(binary, '../../..');
+  if (basename(appBundle) !== 'All-in-One Toolbox.app' || binary !== join(appBundle, 'Contents/MacOS/all-in-one-desktop')) {
+    throw new Error('macOS desktop executable must belong to its All-in-One Toolbox.app bundle');
+  }
+  await readFile(join(appBundle, 'Contents/Info.plist'));
 
   const revision = sourceRevision ?? nativeSourceRevision(root);
   if (!/^[\da-f]{40,64}$/i.test(revision)) {
@@ -60,10 +65,10 @@ export async function bundleDesktopMacos({
   if (existing?.isSymbolicLink()) throw new Error(`Refusing to write through linked resource directory: ${resourceDir}`);
   await mkdir(resourceDir, { recursive: true });
 
-  const outputBinary = join(resourceDir, 'all-in-one-desktop');
+  const outputApp = join(resourceDir, 'All-in-One Toolbox.app');
   const outputManifest = join(resourceDir, 'desktop-manifest.json');
   const suffix = `${process.pid}-${randomUUID()}`;
-  const stagedBinary = join(resourceDir, `.all-in-one-desktop-${suffix}.tmp`);
+  const stagedApp = join(resourceDir, `.All-in-One-Toolbox-${suffix}.tmp`);
   const stagedManifest = join(resourceDir, `.desktop-manifest-${suffix}.tmp`);
   const manifest = {
     runtime: 'desktop',
@@ -77,12 +82,14 @@ export async function bundleDesktopMacos({
   };
 
   try {
-    await writeFile(stagedBinary, bytes, { mode: binaryStat.mode & 0o777 });
+    await cp(appBundle, stagedApp, { recursive: true });
     await writeFile(stagedManifest, `${JSON.stringify(manifest, null, 2)}\n`);
-    await rename(stagedBinary, outputBinary);
+    await rm(outputApp, { recursive: true, force: true });
+    await rename(stagedApp, outputApp);
     await rename(stagedManifest, outputManifest);
+    await rm(join(resourceDir, 'all-in-one-desktop'), { force: true });
   } finally {
-    await rm(stagedBinary, { force: true });
+    await rm(stagedApp, { recursive: true, force: true });
     await rm(stagedManifest, { force: true });
   }
 

@@ -8,7 +8,7 @@ test('desktop targets keep Windows and macOS integrity manifests separate', () =
   for (const architecture of ['arm64', 'x64']) {
     const target = runtimeTarget(DESKTOP_RUNTIME, 'darwin', architecture);
     assert.equal(target.manifest, `darwin-${architecture}/desktop-manifest.json`);
-    assert.equal(target.executable, `darwin-${architecture}/all-in-one-desktop`);
+    assert.equal(target.executable, `darwin-${architecture}/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop`);
   }
   assert.throws(() => runtimeTarget(DESKTOP_RUNTIME, 'linux', 'x64'), { code: 'UNSUPPORTED' });
   assert.throws(() => runtimeTarget(DESKTOP_RUNTIME, 'win32', 'arm64'), { code: 'UNSUPPORTED' });
