@@ -222,8 +222,9 @@ test('slot declaration and injection match the actual sidebar client bundle', as
   )
   const ours = await readFile(clientBundleUrl, 'utf8')
 
-  assert.match(sidebar, /"sidebar\.panellist":\s*\{\s*kind:\s*"list"/)
-  assert.match(sidebar, /ctx\.slots\.inject\("sidebar",\s*\(\)\s*=>\s*ctx\.slots\.register\(\{/)
+  // Installed desktop builds may minify strings to template literals.
+  assert.match(sidebar, /["'`]sidebar\.panellist["'`]:\s*\{\s*kind:\s*["'`]list["'`]/)
+  assert.match(sidebar, /ctx\.slots\.inject\(["'`]sidebar["'`],\s*(?:\(\)\s*=>\s*ctx\.slots\.register\(\{|function\*\(\)\{yield ctx\.slots\.registerFactory\(\{)/)
   assert.match(ours, /ctx\.slots\.inject\('main',/)
   assert.match(ours, /ctx\.slots\.inject\('sidebar\.panellist',/)
 })

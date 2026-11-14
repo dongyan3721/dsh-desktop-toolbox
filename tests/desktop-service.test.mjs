@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile, mkdir, stat } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { Context } from '@deepseek-ai/cordis';
@@ -25,6 +25,10 @@ test('desktop service loads without tools and settles its owned protocol fixture
     assert.equal(ctx.get('tools'), undefined);
     const desktop = ctx.get('toolboxDesktop');
     assert.equal((await desktop.status()).nativeConnected, true);
+    if (process.platform === 'darwin') {
+      assert.ok(Buffer.byteLength(desktop.owner.pipePath) <= 103);
+      assert.equal((await stat(dirname(desktop.owner.pipePath))).mode & 0o777, 0o700);
+    }
     await desktop.showMain();
     await desktop.showMain();
     await desktop.openPanel('sticky_note');
@@ -41,7 +45,9 @@ test('desktop service loads without tools and settles its owned protocol fixture
     assert.equal(desktop.owner.instanceId, previousInstance, 'background reads never restart a stopped process');
     await desktop.showMain();
     assert.notEqual(desktop.owner.instanceId, previousInstance);
+    const endpointDir = desktop.owner.endpointDir;
     await entry.fiber.dispose();
+    if (endpointDir) await assert.rejects(stat(endpointDir), { code: 'ENOENT' });
     ctx.loader.remove(id);
     assert.equal(ctx.get('toolboxDesktop'), undefined);
     const calls = (await readFile(join(dataDir, 'fixture-calls.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
