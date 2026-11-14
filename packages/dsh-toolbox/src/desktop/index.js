@@ -27,6 +27,7 @@ export const inject = ['subprocess'];
 export const Config = Schema.object({
   dataDir: Schema.string().default(''),
   nativeExecutable: Schema.string().default(''),
+  nativeManifest: Schema.string().default(''),
   startupTimeoutMs: Schema.number().default(20000),
   requestTimeoutMs: Schema.number().default(5000),
   cancelTimeoutMs: Schema.number().default(1500),
@@ -42,6 +43,7 @@ function normalizeConfig(config) {
     if (!Number.isSafeInteger(config[field]) || config[field] < 1 || config[field] > 2147483647) throw hostError('INVALID_CONFIG', `${field} must be a timer-safe positive integer`);
   }
   if (config.nativeExecutable && !isAbsolute(config.nativeExecutable)) throw hostError('INVALID_CONFIG', 'Desktop executable override must be absolute');
+  if (config.nativeManifest && (!config.nativeExecutable || !isAbsolute(config.nativeManifest))) throw hostError('INVALID_CONFIG', 'An external desktop manifest requires an absolute manifest and executable path');
   return { ...config, dataDir, tempDir: join(dataDir, '.tmp'), readRoots: [], writeRoots: [] };
 }
 

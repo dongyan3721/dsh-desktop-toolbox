@@ -59,9 +59,14 @@ export class NativeOwner {
     const target = runtimeTarget(this.runtime);
     if (!isAbsolute(config.dataDir)) throw hostError('INVALID_CONFIG', 'dataDir must be an absolute path');
     let executable = config.nativeExecutable;
+    let manifestPath = config.nativeManifest;
     if (!executable) {
       executable = fileURLToPath(new URL(`../../resources/${target.executable}`, import.meta.url));
-      const manifest = JSON.parse(await readFile(new URL(`../../resources/${target.manifest}`, import.meta.url), 'utf8'));
+      manifestPath = new URL(`../../resources/${target.manifest}`, import.meta.url);
+    }
+    if (manifestPath) {
+      if (typeof manifestPath === 'string' && !isAbsolute(manifestPath)) throw hostError('INVALID_CONFIG', 'Native manifest must be absolute');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
       const hash = createHash('sha256').update(await readFile(executable)).digest('hex');
       if (manifest.protocolVersion !== 1 || manifest.platform !== target.platform || manifest.architecture !== target.architecture || manifest.sha256 !== hash || (this.runtime.manifestTag && manifest.runtime !== this.runtime.manifestTag)) throw hostError('NATIVE_INTEGRITY', 'Bundled native binary does not match its release manifest');
     }
@@ -103,7 +108,7 @@ export class NativeOwner {
     const deadline = Date.now() + config.startupTimeoutMs;
     while (Date.now() < deadline) {
       this.startup.signal.throwIfAborted();
-      if (exited) throw hostError('NATIVE_START_FAILED', 'The native process exited before it became ready; check data lock and native configuration');
+      if (exited) throw hostError('NATIVE_START_FAILED', 'The desktop exited before readiness; verify toolbox-plugin protocol support and isolated data configuration');
       try {
         this.bridge = await connectBridge({ pipePath: this.pipePath, instanceId: this.instanceId, signal: this.startup.signal, timeoutMs: Math.max(1, Math.min(500, deadline - Date.now())), cancelTimeoutMs: config.cancelTimeoutMs });
         if (exited || this.bridge.isClosed) throw hostError('NATIVE_START_FAILED', 'The native process exited during startup');
