@@ -32,6 +32,6 @@ export function useActionShortcuts() {
 }
 
 export function localShortcut(keys: string): string {
-  const mac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/i.test(navigator.platform);
+  const mac = typeof navigator !== 'undefined' && (/Mac|iPhone|iPad/i.test(navigator.platform) || /Macintosh|Mac OS X/i.test(navigator.userAgent));
   return keys.replace(/PrimaryMod/g, mac ? '⌘' : 'Ctrl');
 }

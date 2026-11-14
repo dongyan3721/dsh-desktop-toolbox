@@ -27,6 +27,8 @@ test('shortcut recorder uses physical letter keys and rejects IME, repeats, modi
   for (const event of [{ isComposing: true }, { repeat: true }, { key: 'Control' }, { key: 'Tab' }, { key: 'Escape' }, { key: 'CapsLock', code: 'CapsLock' }, { ctrlKey: false, shiftKey: false }, { code: 'IntlBackslash', key: '<' }]) assert.equal(run(event), null);
   assert.equal(vm.runInContext("displayRecordedShortcut('Ctrl+Alt+P', 'windows')", context), 'Ctrl + Alt + P');
   assert.equal(vm.runInContext("displayRecordedShortcut('Shift+Super+V', 'macos')", context), '⇧ + ⌘ + V');
+  vm.runInContext("globalThis.navigator = { platform: 'MacIntel' }", context);
+  assert.equal(vm.runInContext("displayRecordedShortcut('Shift+Super+V')", context), '⇧ + ⌘ + V');
 });
 
 async function preferencesHarness(invoke) {
@@ -204,6 +206,8 @@ test('feature captions follow configured platform labels and drop hints for unas
   assert.equal(vm.runInContext("hints.caption('Open', 'clipboard:toggle_popup')", context), 'Open');
   assert.equal(vm.runInContext("localShortcut('PrimaryMod+S')", context), 'Ctrl+S');
   vm.runInContext("navigator.platform = 'MacIntel'", context);
+  assert.equal(vm.runInContext("localShortcut('PrimaryMod+S')", context), '⌘+S');
+  vm.runInContext("navigator.platform = ''; navigator.userAgent = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)'", context);
   assert.equal(vm.runInContext("localShortcut('PrimaryMod+S')", context), '⌘+S');
   const late = update();
   unmounted[0]();

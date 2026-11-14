@@ -2,9 +2,10 @@ import { t } from '../i18n';
 
 /** 平台名称只用于文案；能否使用设备验证仍以原生 VaultStatus 的能力为准。 */
 function deviceVerificationName(): string {
-  const platform = typeof navigator === 'undefined' ? '' : navigator.platform;
-  if (/win/i.test(platform)) return 'Windows Hello';
-  if (/mac/i.test(platform)) return 'Touch ID';
+  const platform = typeof navigator === 'undefined' ? '' : (navigator.platform || '');
+  const userAgent = typeof navigator === 'undefined' ? '' : (navigator.userAgent || '');
+  if (/win/i.test(platform) || /windows/i.test(userAgent)) return 'Windows Hello';
+  if (/mac/i.test(platform) || /macintosh|mac os x/i.test(userAgent)) return 'Touch ID';
   return t('vault.deviceVerification');
 }
 

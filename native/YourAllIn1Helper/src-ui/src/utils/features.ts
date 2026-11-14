@@ -29,7 +29,8 @@ export function shortcutFromEvent(event: Pick<KeyboardEvent, 'key' | 'code' | 'c
   if (!key || (!(event.ctrlKey || event.altKey || event.metaKey) && !/^F\d+$/.test(key))) return null;
   return [event.ctrlKey && 'Ctrl', event.altKey && 'Alt', event.shiftKey && 'Shift', event.metaKey && 'Super', key].filter(Boolean).join('+');
 }
-export function displayRecordedShortcut(hotkey: string, os: string): string {
+export function displayRecordedShortcut(hotkey: string, os?: string): string {
+  const isMac = os === 'macos' || (!os && typeof navigator !== 'undefined' && (/Mac|iPhone|iPad/i.test(navigator.platform) || /Macintosh|Mac OS X/i.test(navigator.userAgent)));
   const mac: Record<string, string> = { Ctrl: '⌃', Alt: '⌥', Shift: '⇧', Super: '⌘' };
-  return hotkey.split('+').map(token => os === 'macos' ? mac[token] || token : token === 'Super' ? 'Win' : token).join(' + ');
+  return hotkey.split('+').map(token => isMac ? mac[token] || token : token === 'Super' ? 'Win' : token).join(' + ');
 }
