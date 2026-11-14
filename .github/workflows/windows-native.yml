@@ -28,7 +28,8 @@ jobs:
           . ./scripts/Use-ProjectEnvironment.ps1
           npm install --prefix .tmp/ci-tools --no-audit --no-fund pnpm@11.28.5
           if ($LASTEXITCODE -ne 0) { throw 'pnpm tool preparation failed' }
-      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
+        id: rust-cache
         with:
           path: |
             .tmp/cargo-home
@@ -42,6 +43,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'UI dependency preparation failed' }
           & ./.tmp/ci-tools/node_modules/.bin/pnpm.cmd --dir native/YourAllIn1Helper/src-ui run build
           if ($LASTEXITCODE -ne 0) { throw 'UI build failed' }
+          rustc -Vv | Tee-Object artifacts/windows-toolchain.log
           cargo fetch --manifest-path native/YourAllIn1Helper/Cargo.toml --locked
           if ($LASTEXITCODE -ne 0) { throw 'Locked Rust dependency preparation failed' }
           cargo build --manifest-path native/YourAllIn1Helper/Cargo.toml -p all-in-one-host --bin all-in-one-desktop --features tauri/custom-protocol --release --locked --offline -j2
@@ -60,6 +62,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Windows native regression failed' }
       - name: Prepare official Harness SDK (files only)
         run: ./scripts/prepare-harness-windows.ps1
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
+        if: always() && steps.rust-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            .tmp/cargo-home
+            build/rust/target
+            build/rust/intermediates
+          key: windows-native-v1-${{ hashFiles('native/YourAllIn1Helper/Cargo.lock') }}
       - name: Actual SDK regression tests
         run: |
           . ./scripts/Use-ProjectEnvironment.ps1
