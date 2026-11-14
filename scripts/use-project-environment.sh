@@ -12,7 +12,7 @@ export CARGO_BUILD_BUILD_DIR="$toolbox_project_root/build/rust/intermediates"
 export DSH_HOME="$toolbox_project_root/runtime/dsh-dev"
 export DSH_TOOLBOX_WORKSPACE="$toolbox_project_root"
 toolbox_harness_runtime='/Applications/DeepSeek Harness.app/Contents/Resources/runtime'
-if [ -x "$toolbox_harness_runtime/bin/node" ]; then
-  export PATH="$toolbox_harness_runtime/bin:$toolbox_harness_runtime/cli/bin:$PATH"
+if [ -x "$toolbox_harness_runtime/primary-runtime/dependencies/node/bin/node" ]; then
+  export PATH="$toolbox_harness_runtime/primary-runtime/dependencies/node/bin:$toolbox_harness_runtime/cli/bin:$PATH"
 fi
 unset toolbox_harness_runtime toolbox_project_root
