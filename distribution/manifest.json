@@ -1,10 +1,11 @@
 {
   "format": 1,
   "packageName": "dsh-toolbox-bundle",
-  "version": "0.1.0-beta.7",
-  "sourceRevision": "d4bac2d19cf2b5440a613ddf3b462c37805d3854",
+  "version": "0.1.0-beta.8",
+  "sourceRevision": "7e4950b989e1e621206c408cda530247dccc0f24",
   "nativeSources": {
-    "darwin-arm64/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop": "f20782502eedafd5871cdb78b2e535c30970df7b"
+    "win32-x64/all-in-one-desktop.exe": "4f30a6a6296e5a38c03adf38912501428861bbce",
+    "darwin-arm64/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop": "4f30a6a6296e5a38c03adf38912501428861bbce"
   },
   "files": [
     {
@@ -171,7 +172,17 @@
     {
       "path": "resources/darwin-arm64/desktop-manifest.json",
       "bytes": 335,
-      "sha256": "4f650a16b1605ed3dddeea72cf03e0f240b829bfdde08d0c87702b7f51b0f987"
+      "sha256": "bc7a6a4ab43810e079a76945c8e925377fa0113fd30c6e08ccd7a49d102f9f58"
+    },
+    {
+      "path": "resources/desktop-manifest.json",
+      "bytes": 332,
+      "sha256": "2e15ef810b399c6d480d5977bc28e3656d0e179a8621915a86c889e7c02eef90"
+    },
+    {
+      "path": "resources/win32-x64/all-in-one-desktop.exe",
+      "bytes": 36561408,
+      "sha256": "a84fc6c11419d5d5d50f38bd1356c58911f421e5286f33a0c2dd7864b679caec"
     }
   ]
 }

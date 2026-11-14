@@ -1,0 +1,10 @@
+{
+  "runtime": "desktop",
+  "pluginVersion": "0.1.0-beta.8",
+  "harnessVersion": "0.2.2-rc.1 || 0.2.2-rc.3",
+  "protocolVersion": 1,
+  "platform": "win32",
+  "architecture": "x64",
+  "nativeSourceRevision": "4f30a6a6296e5a38c03adf38912501428861bbce",
+  "sha256": "a84fc6c11419d5d5d50f38bd1356c58911f421e5286f33a0c2dd7864b679caec"
+}
