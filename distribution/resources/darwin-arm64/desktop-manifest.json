@@ -1,0 +1,10 @@
+{
+  "runtime": "desktop",
+  "pluginVersion": "0.1.0-beta.7",
+  "harnessVersion": "0.2.2-rc.1 || 0.2.2-rc.3",
+  "protocolVersion": 1,
+  "platform": "darwin",
+  "architecture": "arm64",
+  "nativeSourceRevision": "f20782502eedafd5871cdb78b2e535c30970df7b",
+  "sha256": "0480e7e4b0ae9b5fed00d6e4d167ff8cbc7eedea8f96c75294006055e34f3b2c"
+}

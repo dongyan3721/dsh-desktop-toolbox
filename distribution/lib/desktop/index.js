@@ -12,6 +12,10 @@ export const DESKTOP_RUNTIME = Object.freeze({
   executable: 'win32-x64/all-in-one-desktop.exe',
   manifest: 'desktop-manifest.json',
   manifestTag: 'desktop',
+  targets: Object.freeze({
+    'darwin-arm64': Object.freeze({ executable: 'darwin-arm64/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop', manifest: 'darwin-arm64/desktop-manifest.json' }),
+    'darwin-x64': Object.freeze({ executable: 'darwin-x64/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop', manifest: 'darwin-x64/desktop-manifest.json' }),
+  }),
   flags: Object.freeze(['--toolbox-plugin']),
   shutdownMethod: 'desktop.shutdown',
   allowFileRoots: false,
@@ -23,6 +27,7 @@ export const inject = ['subprocess'];
 export const Config = Schema.object({
   dataDir: Schema.string().default(''),
   nativeExecutable: Schema.string().default(''),
+  nativeManifest: Schema.string().default(''),
   startupTimeoutMs: Schema.number().default(20000),
   requestTimeoutMs: Schema.number().default(5000),
   cancelTimeoutMs: Schema.number().default(1500),
@@ -38,6 +43,7 @@ function normalizeConfig(config) {
     if (!Number.isSafeInteger(config[field]) || config[field] < 1 || config[field] > 2147483647) throw hostError('INVALID_CONFIG', `${field} must be a timer-safe positive integer`);
   }
   if (config.nativeExecutable && !isAbsolute(config.nativeExecutable)) throw hostError('INVALID_CONFIG', 'Desktop executable override must be absolute');
+  if (config.nativeManifest && (!config.nativeExecutable || !isAbsolute(config.nativeManifest))) throw hostError('INVALID_CONFIG', 'An external desktop manifest requires an absolute manifest and executable path');
   return { ...config, dataDir, tempDir: join(dataDir, '.tmp'), readRoots: [], writeRoots: [] };
 }
 

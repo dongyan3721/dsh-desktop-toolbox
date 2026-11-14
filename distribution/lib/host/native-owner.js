@@ -1,9 +1,12 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdir, readFile } from 'node:fs/promises';
-import { isAbsolute } from 'node:path';
+import { mkdir, readFile, mkdtemp, realpath, chmod, unlink, rmdir } from 'node:fs/promises';
+import { isAbsolute, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { connectBridge } from '../bridge/client.js';
+import { runtimeTarget } from './runtime-target.js';
+import { ensureBundledMacosExecutable } from './macos-executable.js';
 
 export function hostError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -54,17 +57,32 @@ export class NativeOwner {
 
   async startNative() {
     const { config } = this;
-    if (process.platform !== 'win32') throw hostError('UNSUPPORTED', 'The native toolbox currently supports Windows only');
+    const target = runtimeTarget(this.runtime);
     if (!isAbsolute(config.dataDir)) throw hostError('INVALID_CONFIG', 'dataDir must be an absolute path');
     let executable = config.nativeExecutable;
+    let manifestPath = config.nativeManifest;
     if (!executable) {
-      executable = fileURLToPath(new URL(`../../resources/${this.runtime.executable}`, import.meta.url));
-      const manifest = JSON.parse(await readFile(new URL(`../../resources/${this.runtime.manifest}`, import.meta.url), 'utf8'));
+      executable = fileURLToPath(new URL(`../../resources/${target.executable}`, import.meta.url));
+      manifestPath = new URL(`../../resources/${target.manifest}`, import.meta.url);
+    }
+    if (manifestPath) {
+      if (typeof manifestPath === 'string' && !isAbsolute(manifestPath)) throw hostError('INVALID_CONFIG', 'Native manifest must be absolute');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
       const hash = createHash('sha256').update(await readFile(executable)).digest('hex');
-      if (manifest.protocolVersion !== 1 || manifest.sha256 !== hash || (this.runtime.manifestTag && manifest.runtime !== this.runtime.manifestTag)) throw hostError('NATIVE_INTEGRITY', 'Bundled native binary does not match its release manifest');
+      if (manifest.protocolVersion !== 1 || manifest.platform !== target.platform || manifest.architecture !== target.architecture || manifest.sha256 !== hash || (this.runtime.manifestTag && manifest.runtime !== this.runtime.manifestTag)) throw hostError('NATIVE_INTEGRITY', 'Bundled native binary does not match its release manifest');
+      if (!config.nativeExecutable && process.platform === 'darwin') await ensureBundledMacosExecutable(executable, manifest.sha256);
     }
     if (!isAbsolute(executable)) throw hostError('INVALID_CONFIG', 'nativeExecutable must be an absolute path');
     await mkdir(config.dataDir, { recursive: true });
+    if (process.platform === 'darwin') {
+      // Keep sockaddr_un below its 104-byte limit even when dataDir is long.
+      // The owner creates a fresh private directory; native verifies peer PID/uid.
+      const base = await realpath(tmpdir());
+      if (Buffer.byteLength(join(base, 'dsh-XXXXXX', 's')) > 103) throw hostError('INVALID_CONFIG', 'TMPDIR is too long for a private macOS socket');
+      this.endpointDir = await mkdtemp(join(base, 'dsh-'));
+      await chmod(this.endpointDir, 0o700);
+      this.pipePath = join(this.endpointDir, 's');
+    }
     this.startup.signal.throwIfAborted();
     executable = await this.subprocess.resolveExecutable(executable, undefined, this.startup.signal);
     const argv = [executable, ...this.runtime.flags, '--pipe-name', this.pipePath, '--instance-id', this.instanceId, '--data-dir', config.dataDir, '--parent-pid', String(process.pid)];
@@ -83,6 +101,7 @@ export class NativeOwner {
     let exited = false;
     this.outcome.then(() => {
       exited = true;
+      this.exited = true;
       if (this.ready && !this.stopping) {
         this.ready = false;
         for (const listener of this.unavailable) listener();
@@ -91,7 +110,7 @@ export class NativeOwner {
     const deadline = Date.now() + config.startupTimeoutMs;
     while (Date.now() < deadline) {
       this.startup.signal.throwIfAborted();
-      if (exited) throw hostError('NATIVE_START_FAILED', 'The native process exited before it became ready; check data lock and native configuration');
+      if (exited) throw hostError('NATIVE_START_FAILED', 'The desktop exited before readiness; verify toolbox-plugin protocol support and isolated data configuration');
       try {
         this.bridge = await connectBridge({ pipePath: this.pipePath, instanceId: this.instanceId, signal: this.startup.signal, timeoutMs: Math.max(1, Math.min(500, deadline - Date.now())), cancelTimeoutMs: config.cancelTimeoutMs });
         if (exited || this.bridge.isClosed) throw hostError('NATIVE_START_FAILED', 'The native process exited during startup');
@@ -149,7 +168,13 @@ export class NativeOwner {
       }
     } finally {
       try { if (this.bridge) await within(this.bridge.close(), this.config.shutdownTimeoutMs); }
-      finally { this.unavailable.clear(); }
+      finally {
+        this.unavailable.clear();
+        if (this.endpointDir && (!this.handle || this.exited)) {
+          await unlink(this.pipePath).catch(error => { if (error.code !== 'ENOENT') throw error; });
+          await rmdir(this.endpointDir).catch(error => { if (error.code !== 'ENOENT') throw error; });
+        }
+      }
     }
     if (this.runtime.strictShutdown && shutdownProblem) {
       const error = hostError('DESKTOP_SHUTDOWN_FAILED', 'The desktop runtime required forced termination; pending edits were not confirmed saved');

@@ -27,3 +27,15 @@
 5. 公开 tag / Release 文件与 SHA-256 可取得，公开来源安装后原生进程能启动并正常退出。
 
 尚不声称：所有十模块、物理快捷键、多屏、Intel、Windows beta.7、干净 macOS 首次系统授权、Developer ID 公证、模型自动选择工具。已验证的 SDK 调用与模型选择工具是两项不同证据。
+
+## 2026-11-14：本地完整包结果
+
+- 完整包 33 个运行时文件，sourceRevision `d4bac2d19cf2b5440a613ddf3b462c37805d3854`。
+- 已签名 app 的 Mach-O SHA-256：`0480e7e4b0ae9b5fed00d6e4d167ff8cbc7eedea8f96c75294006055e34f3b2c`。这是给同一构建补齐资源签名后的哈希。
+- `dsh plugin --profile beta7 add <本地tgz> --store-dir <工作区隔离store>`：成功，未执行安装脚本。
+- `scripts/beta7-macos-acceptance.mjs` 通过真实安装版 CLI 分三阶段运行：default / enabled / persisted，退出码均为 0。
+- 新安装五项默认拒绝；五个工具经授权后都执行成功；真实 Retina 2940×1912、32×32 PNG 图片附件；系统剪贴板文本/历史；打开中的原便笺更新 `display_sync=applied`；原画布 draw/snapshot/clear/stop；真实应用时长从 0 增至 1 秒且小时统计匹配。
+- 五项分别撤权后旧引用拒绝；关闭模块保留授权但拒绝调用；最后五授权关闭，重启后便笺中文/Emoji 内容保存成功。
+- 原生 app `codesign --verify --deep --strict` 通过。此签名是 ad-hoc，不能当作 Developer ID 公证。
+
+机器证据在工作区 `artifacts/beta7/acceptance.jsonl` 与 `artifacts/beta7-local-{default,enabled,persisted}.log`；这些含本地路径的诊断不作为插件内容发布。

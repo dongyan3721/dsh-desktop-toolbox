@@ -1,9 +1,0 @@
-{
-  "pluginVersion": "0.1.0-beta.6",
-  "harnessVersion": "0.2.2-rc.1 || 0.2.2-rc.3",
-  "protocolVersion": 1,
-  "platform": "win32",
-  "architecture": "x64",
-  "nativeSourceRevision": "e0bf468d826105022d8a37d729597c1765af42b3",
-  "sha256": "d4a0e22221a836925b0d09230c4cbf7a341ec0931cea96e091d4843ecb2ce0ea"
-}
