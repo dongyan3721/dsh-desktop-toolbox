@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, chmod } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { buildGithubBundle, verifyGithubBundle } from '../scripts/bundle-github.mjs';
@@ -12,6 +12,8 @@ async function fixture(t) {
   const root = await mkdtemp(join(temp, 'github-bundle-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  // Preserve the Windows layout regression even when this release targets Mac.
+  pkg.os = ['win32']; pkg.cpu = ['x64'];
   await writeFile(join(root, 'package.json'), JSON.stringify(pkg));
   const host = join(root, 'packages/dsh-toolbox');
   const client = join(root, 'packages/dsh-toolbox-client');
@@ -76,4 +78,33 @@ test('assembly refuses a junction instead of deleting its target', async t => {
   await symlink(target, join(f.root, 'distribution'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(buildGithubBundle({ root: f.root, sourceRevision: revision }), /linked distribution/);
   assert.equal(await readFile(join(target, 'marker'), 'utf8'), 'keep');
+});
+
+test('Mac Git URL distribution preserves app identity, architecture and executable inventory', async t => {
+  const f = await fixture(t);
+  f.pkg.os = ['darwin']; f.pkg.cpu = ['arm64'];
+  await writeFile(join(f.root, 'package.json'), JSON.stringify(f.pkg));
+  const resources = join(f.host, 'resources');
+  const app = join(resources, 'darwin-arm64/All-in-One Toolbox.app/Contents');
+  await mkdir(join(app, 'MacOS'), { recursive: true });
+  await mkdir(join(app, 'Resources'), { recursive: true });
+  const bytes = Buffer.alloc(32);
+  bytes.writeUInt32LE(0xfeedfacf, 0);bytes.writeUInt32LE(0x0100000c, 4);bytes.writeUInt32LE(2, 12);
+  const binary = join(app, 'MacOS/all-in-one-desktop');
+  await writeFile(binary, bytes, { mode: 0o755 });
+  await writeFile(join(app, 'Info.plist'), '<plist>synthetic app identity</plist>');
+  await writeFile(join(app, 'Resources/icon.icns'), 'synthetic icon');
+  await writeFile(join(resources, 'darwin-arm64/desktop-manifest.json'), JSON.stringify({ pluginVersion: f.pkg.version, platform: 'darwin', architecture: 'arm64', runtime: 'desktop', protocolVersion: 1, nativeSourceRevision: revision, sha256: createHash('sha256').update(bytes).digest('hex') }));
+  const manifest = await buildGithubBundle({ root: f.root, sourceRevision: revision });
+  assert.ok(manifest.files.some(file => file.path.endsWith('/Info.plist')));
+  assert.equal(manifest.files.filter(file => file.executable).length, 1);
+  assert.ok(manifest.files.every(file => !file.path.endsWith('.exe')));
+  const installed = join(f.root, 'distribution/resources/darwin-arm64/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop');
+  if (process.platform !== 'win32') {
+    await chmod(installed, 0o644);
+    await assert.rejects(verifyGithubBundle(f.root), /executable mode/);
+  }
+  bytes.writeUInt32LE(0x01000007, 4);
+  await writeFile(binary, bytes);
+  await assert.rejects(buildGithubBundle({ root: f.root, sourceRevision: revision }), /integrity manifest/);
 });

@@ -1,5 +1,14 @@
 # DSH Toolbox collaboration rules
 
+## Current macOS beta.7 release
+
+The user now defers dependency decoupling and authorizes a macOS Apple Silicon
+beta release with five Agent modules and direct GitHub URL installation. Codex
+owns integration, isolated installed-Harness acceptance and publication. Keep
+beta.6 and older tags/assets immutable. Do not infer Intel or Windows beta.7
+acceptance from the macOS run. Continue to preserve the original human UI and
+default-OFF Agent grants.
+
 ## Current macOS exploration, 2026-11-14 (supersedes Windows assignment)
 
 The user's latest assignment authorizes all six existing Zed ACP threads (Zed,

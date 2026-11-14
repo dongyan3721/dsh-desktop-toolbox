@@ -1,8 +1,12 @@
 import test from 'node:test';
+// Historical headless fixtures ship a Windows x64 executable. macOS desktop
+// lifecycle and module acceptance run separately against the installed Harness.
+const windowsOnly = process.platform === 'win32' && process.arch === 'x64'
+  ? false : 'requires the historical Windows x64 headless runtime';
 import assert from 'node:assert/strict';
 import { createToolboxContext } from '../scripts/test-context.mjs';
 
-test('built native plugin loads through actual Loader and executes notes through the real pipeline', { timeout: 20000 }, async () => {
+test('built native plugin loads through actual Loader and executes notes through the real pipeline', { skip: windowsOnly, timeout: 20000 }, async () => {
   const harness = await createToolboxContext();
   const { ctx } = harness;
   try {
@@ -38,7 +42,7 @@ test('built native plugin loads through actual Loader and executes notes through
   }
 });
 
-test('native note persists across actual Loader teardown and reactivation', { timeout: 20000 }, async () => {
+test('native note persists across actual Loader teardown and reactivation', { skip: windowsOnly, timeout: 20000 }, async () => {
   const first = await createToolboxContext();
   const created = await first.call('toolbox_note_create', { title: 'restart fixture', content_md: 'restart-owned-fixture' });
   await first.close();
@@ -52,7 +56,7 @@ test('native note persists across actual Loader teardown and reactivation', { ti
   }
 });
 
-test('outer Harness cancellation after a committed native write is not treated as rollback', { timeout: 15000 }, async () => {
+test('outer Harness cancellation after a committed native write is not treated as rollback', { skip: windowsOnly, timeout: 15000 }, async () => {
   const harness = await createToolboxContext();
   const controller = new AbortController();
   const remove = harness.ctx.on('tools/execute', async (exec, next) => {

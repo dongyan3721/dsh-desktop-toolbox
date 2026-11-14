@@ -1,4 +1,8 @@
 import test from 'node:test';
+// Historical headless fixtures ship a Windows x64 executable. macOS desktop
+// lifecycle and module acceptance run separately against the installed Harness.
+const windowsOnly = process.platform === 'win32' && process.arch === 'x64'
+  ? false : 'requires the historical Windows x64 headless runtime';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile, readdir, access } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -7,7 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { createToolboxContext } from '../scripts/test-context.mjs';
 import { tinyBmp, imageDimensions } from '../scripts/image-fixture.mjs';
 
-test('real Loader image tool converts all five formats and enforces file boundaries', { timeout: 30000 }, async () => {
+test('real Loader image tool converts all five formats and enforces file boundaries', { skip: windowsOnly, timeout: 30000 }, async () => {
   const root = fileURLToPath(new URL(`../runtime/images-e2e/${randomUUID()}/`, import.meta.url));
   const inputs = join(root, 'inputs');
   const outputs = join(root, 'outputs');

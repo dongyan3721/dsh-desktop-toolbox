@@ -31,17 +31,36 @@ function validatePackage(pkg) {
   if (pkg.dsh?.client?.platform !== 'web' || pkg.dsh?.bundle?.patch !== './cordis.patch.yml') throw new Error('Missing Bundle/Client declaration');
 }
 
-async function validateNative(resources, version) {
+function nativeTargets(pkg) {
+  const targets = [];
+  if (pkg.os?.includes('win32') && pkg.cpu?.includes('x64')) targets.push({
+    platform: 'win32', architecture: 'x64', directory: 'win32-x64',
+    manifests: [['desktop-manifest.json', 'win32-x64/all-in-one-desktop.exe', 'desktop'], ['native-manifest.json', 'win32-x64/dsh-toolbox-native.exe', undefined]],
+  });
+  for (const architecture of ['arm64', 'x64']) if (pkg.os?.includes('darwin') && pkg.cpu?.includes(architecture)) {
+    const directory = `darwin-${architecture}`;
+    targets.push({ platform: 'darwin', architecture, directory,
+      manifests: [[`${directory}/desktop-manifest.json`, `${directory}/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop`, 'desktop']],
+    });
+  }
+  if (!targets.length) throw new Error('No supported native release targets declared');
+  return targets;
+}
+
+async function validateNative(resources, pkg) {
   const sources = {};
-  for (const [name, binary, runtime] of [
-    ['desktop-manifest.json', 'all-in-one-desktop.exe', 'desktop'],
-    ['native-manifest.json', 'dsh-toolbox-native.exe', undefined],
-  ]) {
+  for (const target of nativeTargets(pkg)) for (const [name, binary, runtime] of target.manifests) {
     const manifest = await json(join(resources, name));
-    const bytes = await readFile(join(resources, 'win32-x64', binary));
-    if (manifest.pluginVersion !== version || manifest.platform !== 'win32' || manifest.architecture !== 'x64'
+    const bytes = await readFile(join(resources, binary));
+    if (manifest.pluginVersion !== pkg.version || manifest.platform !== target.platform || manifest.architecture !== target.architecture
       || manifest.protocolVersion !== 1 || manifest.runtime !== runtime || manifest.sha256 !== sha256(bytes)
       || !/^[a-f0-9]{40}$/.test(manifest.nativeSourceRevision)) throw new Error(`Invalid native integrity manifest: ${name}`);
+    if (target.platform === 'darwin') {
+      const cpuType = target.architecture === 'arm64' ? 0x0100000c : 0x01000007;
+      if (bytes.length < 32 || bytes.readUInt32LE(0) !== 0xfeedfacf || bytes.readUInt32LE(4) !== cpuType || bytes.readUInt32LE(12) !== 2) throw new Error(`Wrong Mach-O architecture: ${binary}`);
+      const info = await readFile(join(resources, target.directory, 'All-in-One Toolbox.app/Contents/Info.plist'));
+      if (!info.length) throw new Error('Missing macOS application identity');
+    }
     sources[binary] = manifest.nativeSourceRevision;
   }
   return sources;
@@ -60,8 +79,9 @@ export async function verifyGithubBundle(root = workspace) {
   for (const file of manifest.files) {
     const bytes = await readFile(join(directory, file.path));
     if (bytes.length !== file.bytes || sha256(bytes) !== file.sha256) throw new Error(`Distribution integrity mismatch: ${file.path}`);
+    if (file.executable && process.platform !== 'win32' && ((await lstat(join(directory, file.path))).mode & 0o111) === 0) throw new Error(`Distribution executable mode missing: ${file.path}`);
   }
-  await validateNative(join(directory, 'resources'), pkg.version);
+  await validateNative(join(directory, 'resources'), pkg);
   for (const entry of Object.values(pkg.exports)) {
     if (typeof entry !== 'string' || !entry.startsWith('./')) throw new Error('Unsupported Bundle export');
     await lstat(join(root, entry));
@@ -82,7 +102,7 @@ export async function buildGithubBundle({ root = workspace, sourceRevision } = {
   if (host.version !== pkg.version || client.version !== pkg.version || client.peerDependencies?.['dsh-toolbox'] !== pkg.version) throw new Error('Release versions must match');
   if (JSON.stringify(pkg.peerDependencies) !== JSON.stringify(host.peerDependencies)) throw new Error('Host and complete Bundle peer requirements must match');
   for (const input of [join(hostRoot, 'lib'), join(hostRoot, 'resources')]) await filesUnder(input);
-  const nativeSources = await validateNative(join(hostRoot, 'resources'), pkg.version);
+  const nativeSources = await validateNative(join(hostRoot, 'resources'), pkg);
   const originalClient = (await readFile(join(clientRoot, 'client.js'), 'utf8')).replaceAll('\r\n', '\n');
   const originalPrefix = "window.__ModuleLoader__.load({\n  id: 'dsh-toolbox-client',";
   if (!originalClient.startsWith(originalPrefix)) throw new Error('Unexpected Client registration format');
@@ -98,12 +118,17 @@ export async function buildGithubBundle({ root = workspace, sourceRevision } = {
   await mkdir(stage, { recursive: true });
   try {
     await cp(join(hostRoot, 'lib'), join(stage, 'lib'), { recursive: true });
-    await cp(join(hostRoot, 'resources'), join(stage, 'resources'), { recursive: true });
+    await mkdir(join(stage, 'resources'), { recursive: true });
+    for (const target of nativeTargets(pkg)) {
+      await cp(join(hostRoot, 'resources', target.directory), join(stage, 'resources', target.directory), { recursive: true });
+      for (const [name] of target.manifests) if (!name.startsWith(`${target.directory}/`)) await cp(join(hostRoot, 'resources', name), join(stage, 'resources', name));
+    }
     await writeFile(join(stage, 'client.js'), originalClient.replace(originalPrefix, `window.__ModuleLoader__.load({\n  id: '${pkg.name}',`));
     const files = [];
     for (const name of await filesUnder(stage)) {
       const bytes = await readFile(join(stage, name));
-      files.push({ path: name, bytes: bytes.length, sha256: sha256(bytes) });
+      const executable = name.includes('.app/Contents/MacOS/');
+      files.push({ path: name, bytes: bytes.length, sha256: sha256(bytes), ...(executable ? { executable: true } : {}) });
     }
     const manifest = { format: 1, packageName: pkg.name, version: pkg.version, sourceRevision, nativeSources, files };
     await writeFile(join(stage, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`);

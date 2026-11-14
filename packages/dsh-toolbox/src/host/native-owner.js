@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { connectBridge } from '../bridge/client.js';
 import { runtimeTarget } from './runtime-target.js';
+import { ensureBundledMacosExecutable } from './macos-executable.js';
 
 export function hostError(code, message) {
   return Object.assign(new Error(message), { code });
@@ -69,6 +70,7 @@ export class NativeOwner {
       const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
       const hash = createHash('sha256').update(await readFile(executable)).digest('hex');
       if (manifest.protocolVersion !== 1 || manifest.platform !== target.platform || manifest.architecture !== target.architecture || manifest.sha256 !== hash || (this.runtime.manifestTag && manifest.runtime !== this.runtime.manifestTag)) throw hostError('NATIVE_INTEGRITY', 'Bundled native binary does not match its release manifest');
+      if (!config.nativeExecutable && process.platform === 'darwin') await ensureBundledMacosExecutable(executable, manifest.sha256);
     }
     if (!isAbsolute(executable)) throw hostError('INVALID_CONFIG', 'nativeExecutable must be an absolute path');
     await mkdir(config.dataDir, { recursive: true });

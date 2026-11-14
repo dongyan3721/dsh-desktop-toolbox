@@ -1,13 +1,13 @@
 {
   "name": "dsh-toolbox",
-  "version": "0.1.0-beta.6",
-  "description": "Original human desktop toolbox for DeepSeek Harness",
+  "version": "0.1.0-beta.7",
+  "description": "DeepSeek Harness desktop toolbox: macOS Apple Silicon beta, five optional Agent modules",
   "type": "module",
   "os": [
-    "win32"
+    "darwin"
   ],
   "cpu": [
-    "x64"
+    "arm64"
   ],
   "main": "./lib/index.js",
   "exports": {

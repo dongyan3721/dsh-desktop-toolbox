@@ -71,4 +71,8 @@ cargo build \
     --bundles app --target "$cargo_target" --ci --no-sign --no-binary-patching
 )
 binary="$CARGO_TARGET_DIR/$cargo_target/release/bundle/macos/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop"
+# Rust signs the Mach-O, but a complete app also needs its resource seal.
+app_bundle="${binary%/Contents/MacOS/all-in-one-desktop}"
+codesign --force --deep --sign - --timestamp=none "$app_bundle"
+codesign --verify --deep --strict "$app_bundle"
 node "$project_root/scripts/bundle-desktop-macos.mjs" "$platform" "$binary"

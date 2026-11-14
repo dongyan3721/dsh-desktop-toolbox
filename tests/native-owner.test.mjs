@@ -1,4 +1,8 @@
 import test from 'node:test';
+// Historical headless fixtures ship a Windows x64 executable. macOS desktop
+// lifecycle and module acceptance run separately against the installed Harness.
+const windowsOnly = process.platform === 'win32' && process.arch === 'x64'
+  ? false : 'requires the historical Windows x64 headless runtime';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +15,7 @@ export function ownerConfig(dataDir) {
   return { nativeExecutable: executable, dataDir, tempDir: fileURLToPath(new URL('../.tmp/', import.meta.url)), readRoots: [], writeRoots: [], startupTimeoutMs: 5000, requestTimeoutMs: 3000, cancelTimeoutMs: 500, shutdownTimeoutMs: 2000 };
 }
 
-test('actual Harness subprocess provider owns native bridge and releases its data lock', { timeout: 20000 }, async () => {
+test('actual Harness subprocess provider owns native bridge and releases its data lock', { skip: windowsOnly, timeout: 20000 }, async () => {
   const dataDir = fileURLToPath(new URL(`../runtime/owner-test/${randomUUID()}/`, import.meta.url));
   const ctx = new Context();
   await ctx.plugin(LocalSubprocess);
@@ -38,7 +42,7 @@ test('actual Harness subprocess provider owns native bridge and releases its dat
   }
 });
 
-test('unexpected owned process exit makes calls unavailable and allows a clean replacement', { timeout: 15000 }, async () => {
+test('unexpected owned process exit makes calls unavailable and allows a clean replacement', { skip: windowsOnly, timeout: 15000 }, async () => {
   const dataDir = fileURLToPath(new URL(`../runtime/owner-test/${randomUUID()}/`, import.meta.url));
   const ctx = new Context();
   await ctx.plugin(LocalSubprocess);

@@ -1,9 +1,13 @@
 import test from 'node:test';
+// Historical headless fixtures ship a Windows x64 executable. macOS desktop
+// lifecycle and module acceptance run separately against the installed Harness.
+const windowsOnly = process.platform === 'win32' && process.arch === 'x64'
+  ? false : 'requires the historical Windows x64 headless runtime';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { createToolboxContext } from '../scripts/test-context.mjs';
 
-test('20 real Loader load/unload cycles release registrations, process ranges and the same data lock', { timeout: 60000 }, async () => {
+test('20 real Loader load/unload cycles release registrations, process ranges and the same data lock', { skip: windowsOnly, timeout: 60000 }, async () => {
   let dataDir;
   for (let iteration = 0; iteration < 20; iteration++) {
     const harness = await createToolboxContext({ ...(dataDir ? { dataDir } : {}) });
@@ -21,7 +25,7 @@ test('20 real Loader load/unload cycles release registrations, process ranges an
   }
 });
 
-test('a conflicting instance fails startup without interrupting the existing plugin', { timeout: 20000 }, async () => {
+test('a conflicting instance fails startup without interrupting the existing plugin', { skip: windowsOnly, timeout: 20000 }, async () => {
   const first = await createToolboxContext();
   try {
     await assert.rejects(createToolboxContext({ dataDir: first.dataDir }), { code: 'NATIVE_START_FAILED' });
@@ -30,7 +34,7 @@ test('a conflicting instance fails startup without interrupting the existing plu
   } finally { await first.close(); }
 });
 
-test('invalid lifecycle configuration and missing executable fail loading without tools', { timeout: 15000 }, async () => {
+test('invalid lifecycle configuration and missing executable fail loading without tools', { skip: windowsOnly, timeout: 15000 }, async () => {
   await assert.rejects(createToolboxContext({ config: { dataDir: 'relative' } }), { code: 'INVALID_CONFIG' });
   await assert.rejects(createToolboxContext({ config: { startupTimeoutMs: 0 } }), { code: 'INVALID_CONFIG' });
   await assert.rejects(createToolboxContext({ config: { nativeExecutable: fileURLToPath(new URL('../.tmp/missing-native.exe', import.meta.url)) } }), /not an executable/);
