@@ -1,0 +1,162 @@
+{
+  "format": 1,
+  "packageName": "dsh-toolbox-bundle",
+  "version": "0.1.0-beta.6",
+  "sourceRevision": "797f0baaab55538c782ee9ee742bdf19a35a9e70",
+  "nativeSources": {
+    "all-in-one-desktop.exe": "e0bf468d826105022d8a37d729597c1765af42b3",
+    "dsh-toolbox-native.exe": "e0bf468d826105022d8a37d729597c1765af42b3"
+  },
+  "files": [
+    {
+      "path": "client.js",
+      "bytes": 286956,
+      "sha256": "557ebcfc5a88ff229f66e6d340a073c0a20e97da03d2d31d4f5c83f18c631141"
+    },
+    {
+      "path": "lib/agent/app-usage.js",
+      "bytes": 2221,
+      "sha256": "2e73b50173344f823bd466adee98e49738d82436d51e11cde33da890bd93d4d3"
+    },
+    {
+      "path": "lib/agent/clipboard.js",
+      "bytes": 2990,
+      "sha256": "db812cf5d95e07d8ae0fa21b718e7830b2eefad394defe0eb9619bc181a4cb1e"
+    },
+    {
+      "path": "lib/agent/common.js",
+      "bytes": 6707,
+      "sha256": "2fb85b9ac725bf3f8b568fd9142b7a5186f09f5fd398ca182b8c13bdd2ed7709"
+    },
+    {
+      "path": "lib/agent/image.js",
+      "bytes": 7564,
+      "sha256": "933e67fa819cf56b176be06c5140024cf70fa484b57743e95863a29190e2d345"
+    },
+    {
+      "path": "lib/agent/index.js",
+      "bytes": 2726,
+      "sha256": "e8fc6a0f40ec597b08cd256ad52398e00e355fad3c91ecaca5c4694475bed7a7"
+    },
+    {
+      "path": "lib/agent/notes.js",
+      "bytes": 6245,
+      "sha256": "2527c0a46eb9a62c40949fe5c63d7ba0358c46c56967c91628fae660f011b122"
+    },
+    {
+      "path": "lib/agent/registry.js",
+      "bytes": 9270,
+      "sha256": "e0c0e9d0a255e0d27e15c8aa164bbf1081e877d3b9489ee992fccce98f67708a"
+    },
+    {
+      "path": "lib/agent/screen-ink.js",
+      "bytes": 4241,
+      "sha256": "375f0bbc003e129b1b46975657c159981252e012e6796bbf90a6421d284c7eec"
+    },
+    {
+      "path": "lib/agent/screenshot.js",
+      "bytes": 2759,
+      "sha256": "b918e4a1a4002b442bbc46fb6ba8e8768193560dcd36b7a08feb86d72d0bbc17"
+    },
+    {
+      "path": "lib/agent/specs.js",
+      "bytes": 3674,
+      "sha256": "614cd3cdff83823202bb4dd3d99618a192019a875849cac733510c82dd0d8600"
+    },
+    {
+      "path": "lib/bridge/client.js",
+      "bytes": 14988,
+      "sha256": "7cf39dee5ba8b3eba63006815990e37649755227d8caa1e8544be65922552333"
+    },
+    {
+      "path": "lib/bridge/errors.js",
+      "bytes": 1188,
+      "sha256": "1117d1c742fa33ec6d644903be2543c68fa7a15ed51c882f89f71efe5e515321"
+    },
+    {
+      "path": "lib/bridge/framing.js",
+      "bytes": 4846,
+      "sha256": "2ee31f9ed2303c6e24d11cee948afe0804f01fa66a09d9477518a45f9421a154"
+    },
+    {
+      "path": "lib/bridge/index.js",
+      "bytes": 415,
+      "sha256": "8a5b9097601efe910ed65b396b6b05ef127d03366e8f183604738f11d26e0e33"
+    },
+    {
+      "path": "lib/bridge/validation.js",
+      "bytes": 5945,
+      "sha256": "00a3c849473f82a584dd1f050bb93dda19764a1f98e052d6149b4781bfccf89f"
+    },
+    {
+      "path": "lib/desktop/agent-access.js",
+      "bytes": 8019,
+      "sha256": "851c0832911e5a10ed0105eef787f0515cbb00d3756574124430310c85221469"
+    },
+    {
+      "path": "lib/desktop/artifacts.js",
+      "bytes": 5549,
+      "sha256": "7b55c8d8420fb33b16f3679bf1f4540668dd95b104d73c54ac8f0d6af8a6a61b"
+    },
+    {
+      "path": "lib/desktop/data-dir.js",
+      "bytes": 818,
+      "sha256": "474f46f64cbd6da5ea25e5159abae8ec0e7bc4d15985b90fa48cf4765e81181b"
+    },
+    {
+      "path": "lib/desktop/index.js",
+      "bytes": 7497,
+      "sha256": "03ff0c8d8fdf9d0f1abbe02dc648489e84621d3af010da168ef77a8d37fa05fd"
+    },
+    {
+      "path": "lib/features/images.js",
+      "bytes": 5722,
+      "sha256": "80a158c6ca5b51d8e3f18247bef6e2421b14e11fd2d98bf85ee334992f67f150"
+    },
+    {
+      "path": "lib/host/image-policy.js",
+      "bytes": 2584,
+      "sha256": "dbcbd00f81d3f38a9b8ba9c19249983a0d482643e6e2ec42e27eb31a0bda0a8b"
+    },
+    {
+      "path": "lib/host/native-owner.js",
+      "bytes": 7589,
+      "sha256": "f478ca498cc5c4c06d0f72b3e29e6073ec74581ecdfa1fbbdb0b345d6cd1dfab"
+    },
+    {
+      "path": "lib/human-entry/console.js",
+      "bytes": 2079,
+      "sha256": "a68f890ae44be1d41b87f5f50106f715b21a3f220e031441c44f6dca90e5eaa3"
+    },
+    {
+      "path": "lib/human-entry/host.js",
+      "bytes": 10244,
+      "sha256": "11eb68a310f6cf524e4d7db6f0c3b09c042da7eb49a7dfb143ce4d15ecc26993"
+    },
+    {
+      "path": "lib/index.js",
+      "bytes": 219,
+      "sha256": "667fcb5e55a5bca0c7612379ae741d9e057db6fca50dedeb044d1294df0202e6"
+    },
+    {
+      "path": "resources/desktop-manifest.json",
+      "bytes": 332,
+      "sha256": "5e6dc9c278f3e0fb4e8f7c5b45d443e6995c6543cb7734ab0e589a7bd4e61317"
+    },
+    {
+      "path": "resources/native-manifest.json",
+      "bytes": 308,
+      "sha256": "06f0ad1e8448642907cd59eb5e010f9b4bd192f5c038156c91fb36fadff6d90b"
+    },
+    {
+      "path": "resources/win32-x64/all-in-one-desktop.exe",
+      "bytes": 36475904,
+      "sha256": "3ec1984f57b81753560ddc0572bf2b8c15a4700822ff76a58fa6f01dc059c64d"
+    },
+    {
+      "path": "resources/win32-x64/dsh-toolbox-native.exe",
+      "bytes": 4398592,
+      "sha256": "d4a0e22221a836925b0d09230c4cbf7a341ec0931cea96e091d4843ecb2ce0ea"
+    }
+  ]
+}
