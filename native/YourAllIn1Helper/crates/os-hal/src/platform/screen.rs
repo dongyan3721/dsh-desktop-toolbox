@@ -30,6 +30,9 @@ impl ScreenCapturer for NativeOsHal {
     }
 
     fn capture_monitor(&self, monitor_id: Option<u32>) -> HalResult<CapturedFrame> {
+        // Every entry point, including Agent capture and ink export, must check
+        // current TCC access. A wallpaper-only frame is not capture success.
+        self.check_capture_permission()?;
         let monitors = Monitor::all().map_err(native_error)?;
         let monitor = match monitor_id {
             Some(id) => monitors
@@ -51,6 +54,7 @@ impl ScreenCapturer for NativeOsHal {
     }
 
     fn capture_region(&self, bounds: SelectionBox) -> HalResult<CapturedFrame> {
+        self.check_capture_permission()?;
         if bounds.width == 0 || bounds.height == 0 {
             return Err(HalError::NativeCallFailed("抓取区域尺寸为 0".to_string()));
         }
@@ -190,6 +194,7 @@ impl ScreenCapturer for NativeOsHal {
     ) -> HalResult<CapturedFrame> {
         #[cfg(target_os = "macos")]
         {
+            self.check_capture_permission()?;
             if let Some(window) = exclusion {
                 // CGWindowID 是 32 位；超范围说明调用方传入了错误平台的 HWND。
                 let window_id = u32::try_from(window).map_err(|_| {
