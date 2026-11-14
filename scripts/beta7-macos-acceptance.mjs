@@ -1,8 +1,9 @@
 // Runs as an explicit local test plugin in the real installed Harness launcher.
 // Not included in the released package. Never run against a personal profile.
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, realpath } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { verifyGithubBundle } from './bundle-github.mjs';
@@ -58,7 +59,14 @@ async function run(ctx) {
   assert.equal(client.graph().entries.filter(e => e.id === 'dsh-toolbox-bundle').length, 1);
   assert.ok(!client.graph().entries.some(e => e.id === 'dsh-toolbox-client'));
   const packageRoot = dirname(dirname(client.clientPath('dsh-toolbox-bundle')));
-  const manifest = await verifyGithubBundle(packageRoot);
+  const installedRoot = await realpath(packageRoot);
+  assert.ok(installedRoot.startsWith(resolve(process.env.DSH_HOME, 'profiles') + sep), 'Acceptance must execute the installed package, not the workspace self-reference: ' + installedRoot);
+  const manifest = await verifyGithubBundle(installedRoot);
+  const nativePids = execFileSync('/usr/bin/pgrep', ['-P', String(process.pid), '-f', '/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop'], { encoding: 'utf8' }).trim().split(/\s+/);
+  assert.equal(nativePids.length, 1);
+  const nativeCommand = execFileSync('/bin/ps', ['-ww', '-p', nativePids[0], '-o', 'command='], { encoding: 'utf8' }).trim();
+  const nativeExecutable = join(installedRoot, 'distribution/resources/darwin-arm64/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop');
+  assert.ok(nativeCommand.startsWith(nativeExecutable + ' --toolbox-plugin '), 'Native child must execute from the installed package: ' + nativeCommand);
   assert.equal(manifest.version, '0.1.0-beta.7');
   const access = await desktop.getAgentAccess();
   assert.deepEqual(access.modules.filter(m => m.agent_supported).map(m => m.id).sort(), [...modules].sort());
@@ -68,7 +76,7 @@ async function run(ctx) {
   for (const id of modules) {
     await assert.rejects(desktop.agentCall(...probes[id]), { code: 'AGENT_ACCESS_DENIED' });
   }
-  await record({ event: 'installed-default-deny', version: manifest.version, sourceRevision: manifest.sourceRevision, dataDir, runtimeFiles: manifest.files.length, nativeConnected: true, clientPackages: 1 });
+  await record({ event: 'installed-default-deny', version: manifest.version, sourceRevision: manifest.sourceRevision, dataDir, packageRoot: installedRoot, nativeExecutable, runtimeFiles: manifest.files.length, nativeConnected: true, clientPackages: 1 });
   if (phase === 'default') return;
 
   if (phase === 'persisted') {

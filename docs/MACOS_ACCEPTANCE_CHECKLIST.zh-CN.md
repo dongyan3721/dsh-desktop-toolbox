@@ -1,3 +1,8 @@
+> beta.7 五模块发布已完成，最终安装、SDK 和公开 URL 证据见
+> [BETA7_MACOS_RELEASE.zh-CN.md](BETA7_MACOS_RELEASE.zh-CN.md)。
+> 以下清单是此前的完整 macOS 产品范围，未全部作为本轮五模块 beta 的验收项；
+> 不将物理快捷键、多屏、Intel 或其他五模块标记为已通过。
+
 # macOS 移植与验收清单
 
 日期：2026-11-14。基线：`v0.1.0-beta.6`，后续 Windows 发布后验收记录在 main。**本文件是待执行清单，尚未在 macOS 上运行任何测试。**

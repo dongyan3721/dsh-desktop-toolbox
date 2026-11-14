@@ -1,0 +1,32 @@
+{
+  "version": "0.1.0-beta.7",
+  "platform": "darwin-arm64",
+  "harness": "0.2.2-rc.3",
+  "tagCommit": "cf4fe5dafc6c09495e6f61907e570293e53aed10",
+  "archiveSha256": "e14a72bc439f59bb6b048b5f4fcb75bc3352c99b2bf5830f213d875c183a1ff7",
+  "publicInstallSources": [
+    "GitHub commit",
+    "GitHub tag",
+    "GitHub Release tarball"
+  ],
+  "installedClientAndNativePathsAsserted": true,
+  "fiveModuleSdkAcceptancePassed": true,
+  "defaultDeniedModules": 5,
+  "revokedOldReferencesDenied": 5,
+  "moduleDisabledBoundariesPassed": 5,
+  "notesPersistedAfterRestart": true,
+  "electronHostWebClientTagImportPassed": true,
+  "nativeOriginalWindowPassed": true,
+  "ownedNativeProcessesAfterCleanup": 0,
+  "tests": {
+    "pass": 190,
+    "skippedWindowsOnly": 9
+  },
+  "scopeLimits": [
+    "Apple Silicon only",
+    "No Developer ID notarization",
+    "No fresh-system OS permission acceptance",
+    "No claim of model tool selection",
+    "No physical-hotkey or multi-monitor acceptance"
+  ]
+}
