@@ -1,6 +1,6 @@
 # beta.6 URL 安装验收
 
-日期：2026-11-14。状态：本地完整包、旧双包切换和真实 GitHub commit URL 安装均通过。固定 tag 与 Release URL 在发布阶段继续验证。
+日期：2026-11-14。状态：本地完整包、旧双包切换、真实 GitHub commit URL、版本 tag URL 和公开 Release 安装包 URL 均通过。已发布 [v0.1.0-beta.6 预发布版](https://github.com/dongyan3721/dsh-desktop-toolbox/releases/tag/v0.1.0-beta.6)。
 
 ## 构建
 
@@ -43,7 +43,16 @@ https://github.com/dongyan3721/dsh-desktop-toolbox#641023d0e35c521cfbc406ea56a18
 
 随后用实际 rc.3 Web 运行时加载该远端安装，Driver 通过：版本 beta.6、30 文件完整性通过、一个 Client、原生进程已连接、五模块默认拒绝；`appExit(0)` 后退出码 0。日志在 `github-remote/install-github.log` 与 `github-remote/acceptance-github.log`。
 
-固定版本 tag 和单个 Release `.tgz` URL 在发布阶段继续验证，不能将上面的 commit spec 通过替代二者的证据。
+另外使用两个全新 Profile / store 分别验证以下地址：
+
+```text
+https://github.com/dongyan3721/dsh-desktop-toolbox#v0.1.0-beta.6
+https://github.com/dongyan3721/dsh-desktop-toolbox/releases/download/v0.1.0-beta.6/dsh-toolbox-bundle-0.1.0-beta.6.tgz
+```
+
+两者的实际安装和同一 rc.3 运行时 Driver 均通过，退出码 0，30 文件校验、唯一 Client 和五模块默认拒绝通过。tag 锁文件解析到 `0ba5e7202a301984ea8f8636383c0c4bc9180501`；完整包版本为 beta.6，压缩体积 16,497,136 字节。记录分别位于本轮的 `github-tag/` 与 `github-release-url/`，Release URL 验证发生在公开发布后，未使用 GitHub 认证信息下载该包。
+
+Release 共五个附件，发布前逐一核对 GitHub 返回的大小和 SHA256 与本地一致。版本 tag 保持指向发布 commit；本文的发布后复验记录单独提交到 main，不移动已有 tag，也不重打安装包。
 
 ## 范围
 

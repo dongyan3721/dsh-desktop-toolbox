@@ -2,6 +2,8 @@
 
 日期：2026-11-14。Codex 负责实现、装配和验收；不新建分支或工作树。
 
+本轮已完成构建、真实界面、卸载重装、旧双包切换、远端 GitHub commit / tag 与公开 Release URL 安装验收，并发布 beta.6。结果与边界见 [验收记录](BETA6_URL_INSTALL_ACCEPTANCE.zh-CN.md)。下文保留执行计划与结构说明。
+
 ## 结构
 
 - 根包 `dsh-toolbox-bundle@0.1.0-beta.6` 是完整 Windows x64 Bundle。既可从 GitHub 仓库根 URL 安装，也可从单个 `.tgz` URL 安装。
