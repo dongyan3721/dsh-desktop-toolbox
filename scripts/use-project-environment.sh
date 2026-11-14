@@ -9,6 +9,7 @@ export TMPDIR="$toolbox_project_root/.tmp" TEMP="$toolbox_project_root/.tmp" TMP
 export NODE_COMPILE_CACHE="$toolbox_project_root/.tmp/node-compile-cache"
 export CARGO_TARGET_DIR="$toolbox_project_root/build/rust/target"
 export CARGO_BUILD_BUILD_DIR="$toolbox_project_root/build/rust/intermediates"
+export CARGO_HOME="$toolbox_project_root/.tmp/cargo-home"
 export DSH_HOME="$toolbox_project_root/runtime/dsh-dev"
 export DSH_TOOLBOX_WORKSPACE="$toolbox_project_root"
 toolbox_harness_runtime='/Applications/DeepSeek Harness.app/Contents/Resources/runtime'

@@ -6,6 +6,12 @@ This contract is owned by Codex. Implementations may request corrections in thei
 
 ## macOS exploration addendum (2026-11-14)
 
+The native HAL keeps macOS monitor bounds in desktop points for human window
+placement and xcap region capture. Agent monitor bounds and drawing coordinates
+are physical pixels; the bridge converts them once using the display scale.
+The ink canvas uses the original logical size, without dividing Retina points
+by the scale a second time. Synthetic/Windows adapters keep their pixel bounds.
+
 macOS desktop integration uses the same v1 framing, envelopes, cancellation and
 closed methods over a Unix domain socket. This addendum specifies the current
 implementation work; acceptance is reported separately in MACOS_ACCEPTANCE.zh-CN.md.

@@ -1,5 +1,5 @@
 // Creates a separate, local acceptance package. Never rewrites beta.6 distribution/.
-import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -37,4 +37,14 @@ await writeFile(join(stage, 'distribution/provenance.json'), JSON.stringify({
 const output = join(root, 'artifacts/macos-preview');
 await mkdir(output, { recursive: true });
 execFileSync('pnpm', ['pack', '--pack-destination', output], { cwd: stage, stdio: 'inherit' });
+// npm pack normalizes non-bin files to 0644. A native companion is not a CLI
+// entry point, and must not need an install hook merely to restore its mode.
+// Repack only our own pack output, preserving its file selection and metadata.
+const archive = join(output, `${pkg.name}-${pkg.version}.tgz`);
+const unpacked = await mkdtemp(join(root, '.tmp/macos-pack-mode-'));
+execFileSync('tar', ['-xzf', archive, '-C', unpacked]);
+await chmod(join(unpacked, 'package/distribution/resources', target, 'All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop'), 0o755);
+const executableArchive = `${archive}.tmp`;
+execFileSync('tar', ['-czf', executableArchive, '-C', unpacked, 'package']);
+await rename(executableArchive, archive);
 console.log(`Staged local preview at ${stage}`);
