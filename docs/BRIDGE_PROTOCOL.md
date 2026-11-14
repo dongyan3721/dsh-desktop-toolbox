@@ -4,6 +4,28 @@ Current desktop addendum (beta.5, 2026-11-14): the original desktop runtime adve
 
 This contract is owned by Codex. Implementations may request corrections in their handoff; do not change it independently.
 
+## macOS exploration addendum (2026-11-14)
+
+macOS desktop integration uses the same v1 framing, envelopes, cancellation and
+closed methods over a Unix domain socket. This addendum specifies the current
+implementation work; acceptance is reported separately in MACOS_ACCEPTANCE.zh-CN.md.
+
+Host creates a fresh private 0700 directory with `mkdtemp` beneath its configured
+temporary directory and passes the absolute `<directory>/s` as `--pipe-name`.
+The UTF-8 path is at most 103 bytes. The complete random instanceId remains in
+the handshake; the short filesystem name is not an authorization identity.
+Native verifies the private directory and the connected parent's PID and uid,
+sets the socket to 0600, and refuses an existing endpoint. It does not probe,
+take over, or remove stale sockets from other instances. Native only removes
+the socket it successfully bound; Host removes its empty private directory
+after confirming the owned process exited. Parent death/disconnect follows the
+same ordered flush/shutdown contract as Windows. Data-directory exclusivity
+must use a real macOS file lock.
+
+Windows retains its existing named-pipe path and ACL/PID checks. No HTTP fallback
+or discovery/attachment to an independently running personal desktop is added.
+The existing independently released 0.1.4 app does not implement this protocol.
+
 ## Transport and ownership
 
 Windows Named Pipe, private random name `\\.\pipe\dsh-toolbox-<instanceId>`. Native is server, Node is client. Native restricts the pipe to the current user, rejects remote clients, and verifies the supplied parent PID against the connecting process where Windows APIs permit. This is trusted same-user IPC, not a sandbox for hostile same-user code.
