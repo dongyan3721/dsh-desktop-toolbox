@@ -1,52 +1,121 @@
-# DSH Toolbox 迁移工作区
+# DSH Toolbox
 
-将 `C:\Users\xcxix\PyCharmProjects\YourAllIn1Helper` 迁移为 DeepSeek Harness 插件。
+DSH Toolbox 是作者自用的面向日常使用的 Windows 桌面工具箱，作为 DeepSeek Harness 插件运行。它保留原有主控台、功能窗口、托盘和全局快捷键；人的操作不依赖模型请求。当前发布版本为 **0.1.0-beta.5**。
 
-2026-11-14：`0.1.0-beta.5` 已完成本轮集成和受控验收：Harness 内嵌原 Vue 主控台、快捷键诊断详情、Windows 剪贴板来源、旧便笺工具迁出生产包。519 项回归通过，并在已安装 DSH `0.2.2-rc.3` 完成界面、真实热键/剪贴板及退出清理验收；两个包在 `dist/`。范围、哈希与未测项见 [beta.5 验收记录](docs/BETA5_ACCEPTANCE.zh-CN.md)，历史包/tag 保留。
+DSH Toolbox is a Windows desktop toolbox for the owner's everyday use, packaged as a DeepSeek Harness plugin. It keeps the original console, feature windows, tray icon, and global shortcuts. Human actions do not require a model request. The current release is **0.1.0-beta.5**.
 
-2026-11-14：新增 `0.1.0-beta.4`。桌面组件在未配置 `DSH_HOME` 时使用 `%USERPROFILE%\.dsh\toolbox-desktop-data`。原生程序沿用 beta.3，依赖声明仍接受 DSH `0.2.2-rc.1` 与 `0.2.2-rc.3`。详见 [beta.4 记录](docs/BETA4_DESKTOP_DATA_DIR.zh-CN.md)。此前 [beta.3](docs/BETA3_DSH_RC3_DECLARATIONS.zh-CN.md) 只放宽了安装声明。
+## 概述 | Overview
 
-产品主线是**供人日常使用的工具箱**：保留原界面、窗口、托盘与快捷键。首个功能验收基线 `0.1.0-beta.2` 已完成 A3 集成和本机受控验收；五项支持 Agent 的模块为截图、剪贴板、屏幕注释、应用使用时长、便笺，功能启停与 Agent 授权独立，新授权默认关闭。其他五项只供人使用。
+工具箱在 Harness 侧栏中直接打开。主控台与独立主窗口使用同一套原生内核和数据。关闭主窗口后，托盘和已注册的快捷键仍然有效；完全退出请使用应用菜单或托盘中的退出命令。
 
-两个安装包位于 `dist/`，已登录隔离 Electron 预览沿用原 D 盘数据。实际测试、发布哈希与明确未测项见 [beta 1 验收记录](docs/BETA1_ACCEPTANCE.zh-CN.md)。密码本/系统认证、外部翻译服务、个人旧数据导入与多显示器兼容不列为本次全部通过。
+The toolbox opens from the Harness sidebar. The console and the standalone main window share one native kernel and one data store. Closing the main window leaves the tray icon and registered shortcuts running. Use the application menu or the tray command to exit completely.
 
-- [迁移计划](docs/MIGRATION_PLAN.zh-CN.md)：架构、十个模块的迁移范围、阶段安排、数据与发布验收。
-- [人用优先实施计划](docs/HUMAN_FIRST_PLAN.zh-CN.md)：最新优先级、原快捷键对等清单和下一阶段人用闭环。
-- [双开关与 Agent 共享计划](docs/AGENT_ACCESS_PLAN.zh-CN.md)：用户最新支持名单、三位 Agent 的 A2 任务及集成门槛；[共享契约](docs/A2_CONTRACT.md)。
-- [A2 实际派工记录](docs/A2_COORDINATION.zh-CN.md)：原会话发送状态、同步基线和 Codex 集成顺序。
-- [A2 交付复核与下一步](docs/A2_NEXT_PHASE.zh-CN.md)：141 项复跑结果、加入便笺后的五项范围、现有接线缺口、集成顺序和下一轮分工建议。
-- [H1 派工与进展](docs/H1_COORDINATION.zh-CN.md)：三位本机 Agent 的当前任务、边界和实际验证状态。
-- [勘察基线](docs/BASELINE.zh-CN.md)：本次实际检查结果、版本和待核对项。
-- [派工与验证记录](docs/COORDINATION.zh-CN.md)：三个本机 agent 的任务、已完成的样例验证和剩余工作。
-- [交付后的下一步计划](docs/NEXT_PHASE_PLAN.zh-CN.md)：第一轮交付复核、已确认缺口、联调及发布门槛。
-- [第二轮集成与验收](docs/INTEGRATION_R2.zh-CN.md)：实际可用范围、测试、发布物校验和限制。
-- [人用桌面 H1 验收](docs/INTEGRATION_H1.zh-CN.md)：311 项自动测试、真实窗口/键盘/Electron/模型共存验收、安装包和已知限制。
-- [插件开发指南快照](docs/references/deepseek-harness-plugin-dev-guide/README.md)：按固定 commit 保存，来源见勘察基线。
+本版发布两个必须成对安装的包：
 
-插件使用本机 Harness `0.2.2-rc.1` 的实际 SDK。默认人用 Bundle 启动原桌面服务，并与同版本 Client 包提供可见入口；旧 headless Agent 产品入口已退役，历史 alpha 归档保持冻结。新配置只启用便笺，其他模块保持原源码和默认键定义，尚不宣称全部实测。原生源码按固定基线导出到 `native/YourAllIn1Helper`；原 C 盘项目保持只读。构建中间文件、测试数据和发布包均在本工作区中生成，共享缓存和工具链复用 D 盘目录。
+This release ships two packages, and they must be installed together:
 
-当前本机已安装预览可通过 `./scripts/Open-HumanPreview.ps1` 重新打开。此脚本使用 `runtime/human-preview.json` 中记录的 D 盘隔离目录，保留本次用户登录与测试数据。命令行替换/升级包前先正常退出 Harness，避免运行中的 Windows exe 被 pnpm 文件锁阻止替换。
+| 包 Package | 作用 Role |
+| --- | --- |
+| `dist/dsh-toolbox-0.1.0-beta.5.tgz` | Host。桌面服务、十个功能模块和 Agent 工具。Host. Desktop service, ten feature modules, and Agent tools. |
+| `dist/dsh-toolbox-client-0.1.0-beta.5.tgz` | Client。Harness 侧栏入口和内嵌主控台。Client. Harness sidebar entry and embedded console. |
 
-在本工作区 PowerShell 中运行：
+校验和见 [`dist/SHA256SUMS-0.1.0-beta.5.txt`](dist/SHA256SUMS-0.1.0-beta.5.txt)。历史版本的包和 tag 均保留，不被本版覆盖。
+
+Checksums are listed in [`dist/SHA256SUMS-0.1.0-beta.5.txt`](dist/SHA256SUMS-0.1.0-beta.5.txt). Packages and tags from earlier releases remain in place and are not replaced.
+
+声明的运行环境为 Windows x64、Node 24，以及 DeepSeek Harness `0.2.2-rc.1` 或 `0.2.2-rc.3`。beta.5 的界面验收使用已安装的 Harness `0.2.2-rc.3`。
+
+The declared runtime is Windows x64, Node 24, and DeepSeek Harness `0.2.2-rc.1` or `0.2.2-rc.3`. The beta.5 interface was accepted on an installed Harness `0.2.2-rc.3`.
+
+## 功能 | Features
+
+新配置只启用便笺。其余功能可在主控台中单独开启。功能开关和“允许 Agent 访问”是两项独立设置；Agent 授权默认关闭。
+
+A new configuration enables sticky notes only. Every other feature can be turned on from the console. The feature switch and “Allow Agent access” are independent, and Agent access is off by default.
+
+| 模块 Module | 说明 Description | Agent |
+| --- | --- | --- |
+| 增强截图与贴图 Screenshot | 区域截图、长截图、GIF 和 OCR。Region capture, scrolling capture, GIF, and OCR. | 支持 Supported |
+| 剪贴板管理 Clipboard | 文本和图片历史。Windows 上记录剪贴板所有者应用名；无法取得时保留为空，不回填旧记录。Text and image history. On Windows, the owning application's name is recorded; when it cannot be determined, the source stays empty and older rows are not backfilled. | 支持 Supported |
+| 桌面屏幕注释 Screen ink | 屏幕标注与鼠标穿透。On-screen annotation and mouse passthrough. | 支持 Supported |
+| 桌面置顶便笺 Sticky notes | Markdown 便笺。搜索、读取、创建和带版本检查的更新；打开中的编辑器先同步再写入。Markdown notes. Search, read, create, and version-checked updates; an open editor is synchronized before a write. | 支持 Supported |
+| 应用使用时长 App usage | 应用使用统计。Application usage statistics. | 支持 Supported |
+| 自定义脚本 Scripts | 由人运行或通过快捷键触发的脚本。Scripts run by a person or by a shortcut. | 不支持 Not supported |
+| 全局划词翻译 Translator | 翻译所选文字。外部服务需自行配置。Translation of selected text. An external service must be configured separately. | 不支持 Not supported |
+| 基础多媒体处理 Media | 基础媒体处理。Basic media processing. | 不支持 Not supported |
+| 窗口置顶 Window pin | 将外部窗口保持在最前。Keep an external window above other windows. | 不支持 Not supported |
+| 生物识别密码本 Password vault | 本地密码本。系统认证需由使用者另行确认。Local vault. System authentication requires separate confirmation by the user. | 不支持 Not supported |
+
+获得授权的 Agent 与人使用同一桌面内核。撤回授权、关闭功能、断开连接或卸载之后，旧的工具调用不再继续访问数据。
+
+An authorized Agent uses the same desktop kernel as the person. After access is revoked, a feature is disabled, the connection drops, or the plugin is removed, earlier tool calls can no longer reach the data.
+
+## 快捷键 | Shortcuts
+
+偏好设置中可以查看、修改和重新检测全局快捷键。诊断会区分内部冲突、非法组合、系统保留、系统拒绝、注册占用、探测失败和尚未检测。内部冲突标出模块、动作或脚本。系统错误 1409 只说明该组合键已被注册。
+
+Shortcuts can be reviewed, changed, and checked again from Preferences. Diagnosis distinguishes an internal conflict, an invalid combination, a system reservation, a system refusal, an existing registration, a failed probe, and a check that did not run. An internal conflict names the module, action, or script. System error 1409 means only that the combination is already registered.
+
+Windows 的 `RegisterHotKey` 不返回占用该热键的进程。界面在没有可靠证据时写明“系统未提供占用程序信息”，并给出更换组合键、退出相关程序后重检等排查步骤。它不会把前台程序或常见软件显示为已确认的占用者，也不会自动改键或关闭其他程序。
+
+Windows `RegisterHotKey` does not return the process that holds a hotkey. Without reliable evidence, the interface states that the system did not identify a program and offers steps such as choosing another combination or quitting related programs and checking again. It does not present the foreground process or a familiar application as a confirmed owner, and it does not change the binding or close another program automatically.
+
+## 数据 | Data
+
+数据目录必须是绝对路径。显式的 `dataDir` 优先，其次是 `DSH_TOOLBOX_DATA_DIR`。两者都未设置时，使用 `DSH_HOME/toolbox-desktop-data`。普通客户端没有 `DSH_HOME` 时，桌面组件使用用户主目录下的 `.dsh/toolbox-desktop-data`。相对路径会被拒绝。已有个人数据不会自动导入。
+
+The data directory must be an absolute path. An explicit `dataDir` takes priority, followed by `DSH_TOOLBOX_DATA_DIR`. When neither is set, the directory is `DSH_HOME/toolbox-desktop-data`. If a normal client has no `DSH_HOME`, the desktop component uses `.dsh/toolbox-desktop-data` under the user profile. A relative path is rejected. Existing personal data is not imported automatically.
+
+卸载会停止本工具箱自己的进程并保留数据。无法确认数据已保存，或必须强制结束进程时，卸载报告失败。
+
+Removal stops the toolbox's own processes and keeps the data. If a save cannot be confirmed, or a process would have to be killed, removal fails.
+
+## 安装与升级 | Install and upgrade
+
+在 Harness 的插件页面安装上述两个同版本包，或使用等价的 `dsh plugin --profile desktop add`。安装后从侧栏进入工具箱。
+
+Install both packages of this version from the Harness plugin page, or with the equivalent `dsh plugin --profile desktop add`. Open the toolbox from the sidebar afterward.
+
+在 Windows 上替换正在运行的程序前，先从“应用 → 退出”正常退出 Harness，避免可执行文件被占用而无法替换。升级不覆盖更早的发布包。
+
+On Windows, exit Harness with Application → Exit before replacing a running build, so the executable is not locked. An upgrade does not overwrite an older release package.
+
+## 开发 | Development
+
+原生桌面实现位于 `native/YourAllIn1Helper`，Harness 插件位于 `packages/dsh-toolbox` 和 `packages/dsh-toolbox-client`。发布物运行时不需要 Rust，也不需要编译原生代码。
+
+The native desktop implementation is in `native/YourAllIn1Helper`. The Harness plugin is in `packages/dsh-toolbox` and `packages/dsh-toolbox-client`. A published package does not need Rust or a native compile step at install time.
+
+构建机需要 Node.js 24、pnpm、Rust stable（`x86_64-pc-windows-msvc`）、Visual Studio 2022 的 C++ 桌面开发工作负载，以及 WebView2 Runtime。在仓库根目录的 PowerShell 中执行：
+
+A build machine needs Node.js 24, pnpm, Rust stable (`x86_64-pc-windows-msvc`), the Visual Studio 2022 Desktop development with C++ workload, and the WebView2 Runtime. From the repository root in PowerShell:
 
 ```powershell
 . ./scripts/Use-ProjectEnvironment.ps1
 ./scripts/Build-Package.ps1
-node --test tests/*.test.mjs packages/dsh-toolbox/tests/*.test.mjs
-node ./scripts/demo.mjs
+npm test
 ```
 
-本机 SDK 快照在 `vendor/harness-runtime`，根 node_modules 是指向它的 D 盘 junction。初始提取使用已安装的 Electron Node 模式执行 `scripts/inspect-harness-runtime.cjs --reference --extract-sdk`，追加进程/文件系统依赖使用 `scripts/extract-process-sdk.cjs`；安装位置目前为 `E:\deepseek-harness`，仅作只读输入。提取脚本属于开发准备，不随插件包发布。
+`Build-Package.ps1` 构建 Vue 界面、带 `tauri/custom-protocol` 的桌面 release，以及用于协议回归的 headless release，并生成完整性清单。已提交的同版本归档不会被覆盖。SDK、工作树和测试数据库不进入安装包。
 
-`Build-Package.ps1` 从当前工作树构建原 Vue、带 `tauri/custom-protocol` 的桌面 release 和独立 headless release，生成完整性清单、构建 ESM，并将两个 tarball 放入 `dist`。打包要求原生源码已提交；已有同版本归档会被拒绝覆盖。SDK、工作树和测试数据库不进包，不执行安装期编译。需要已准备的 Rust/MSVC、Node 与 pnpm；发布物运行无需 Rust 或原 C 盘项目。
+`Build-Package.ps1` builds the Vue interface, the desktop release with `tauri/custom-protocol`, and the headless release used for protocol regression, then writes an integrity manifest. An existing archive of the same version is not overwritten. The SDK, worktrees, and test databases are not included in the package.
 
-旧 headless 发布包隔离验收（人用包按 H1 记录验证，不能套用此驱动）：
+## 本版范围 | Scope of this release
 
-```powershell
-./scripts/Test-PackagedPlugin.ps1 -Package ./dist/dsh-toolbox-0.1.0-alpha.2.tgz -Images
-# 可附加 -PreviousPackage ./dist/dsh-toolbox-0.1.0-alpha.1.tgz 验证升级保留数据。
-```
+beta.5 在 beta.4 之上完成四项修正：Harness 内嵌原主控台、快捷键冲突诊断、Windows 剪贴板来源，以及从生产包移除旧便笺实现。自动回归 519 项通过，并在受控的 Windows 环境中验收了界面、真实热键、剪贴板来源和退出清理。
 
-现有后端验收脚本启动真实 CLI/Profile，不调用模型 API；检查便笺创建/查询/更新、重启持久化、配置重载、图片实际格式和卸载配置。它不验证原生 GUI 或快捷键。Windows x64 是本轮运行目标，外部发布前仍需完整许可和额外系统兼容性审计。日常用户 Profile 不在本轮安装范围内。
+Beta.5 adds four changes on top of beta.4: the original console embedded in Harness, shortcut-conflict diagnosis, Windows clipboard source attribution, and removal of the legacy notes implementation from the production package. The automated regression contains 519 passing tests. A controlled Windows session also accepted the interface, real hotkeys, clipboard sources, and exit cleanup.
 
-三位本机 agent 沿用独立工作树：Cursor 提供原生能力、CodeBuddy 接替 Antigravity 完成前端、Zed 提供 Agent 工具。Codex 负责集成、修复、真实测试和 beta 打包；不新建分支或工作树。边界与接口见 [H1 契约](docs/H1_CONTRACT.md)、[桥协议](docs/BRIDGE_PROTOCOL.md) 及 `docs/tasks/`。
+以下项目不作为 beta.5 的通过项：密码本与 Windows Hello 的人工验收、外部翻译服务、多显示器和不同缩放比例、个人旧数据迁移，以及十个模块的长时间稳定性。macOS 上的剪贴板来源查询尚未实现。对外发布前仍需单独的兼容性和许可审计。
+
+The following are not accepted items of beta.5: manual acceptance of the vault and Windows Hello, an external translation service, multiple monitors and scale factors, migration of personal data, and long-run stability of all ten modules. Clipboard source lookup is not implemented on macOS. A separate compatibility and license review is still required before distribution outside this project.
+
+验收命令、证据和限制见 [beta.5 验收记录](docs/BETA5_ACCEPTANCE.zh-CN.md)。更早的发布记录见 [beta.4](docs/BETA4_DESKTOP_DATA_DIR.zh-CN.md)、[beta.3](docs/BETA3_DSH_RC3_DECLARATIONS.zh-CN.md)、[beta.1](docs/BETA1_ACCEPTANCE.zh-CN.md) 和 [H1 桌面验收](docs/INTEGRATION_H1.zh-CN.md)。
+
+Commands, evidence, and limits are recorded in the [beta.5 acceptance report](docs/BETA5_ACCEPTANCE.zh-CN.md). Earlier release records are [beta.4](docs/BETA4_DESKTOP_DATA_DIR.zh-CN.md), [beta.3](docs/BETA3_DSH_RC3_DECLARATIONS.zh-CN.md), [beta.1](docs/BETA1_ACCEPTANCE.zh-CN.md), and the [H1 desktop acceptance report](docs/INTEGRATION_H1.zh-CN.md).
+
+## 许可 | License
+
+本项目采用 [MIT License](LICENSE)。
+
+This project is licensed under the [MIT License](LICENSE).
