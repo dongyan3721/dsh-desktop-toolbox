@@ -147,3 +147,10 @@ test('a matching hash cannot disguise a wrong Windows executable architecture', 
   await writeFile(manifestPath, JSON.stringify(manifest));
   await assert.rejects(buildGithubBundle({ root: f.root, sourceRevision: revision }), /Windows x64 PE/);
 });
+
+test('assembly refuses installation filters on the shared JavaScript plugin', async t => {
+  const f = await fixture(t);
+  f.pkg.os = ['darwin'];
+  await writeFile(join(f.root, 'package.json'), JSON.stringify(f.pkg));
+  await assert.rejects(buildGithubBundle({ root: f.root, sourceRevision: revision }), /must not set os\/cpu/);
+});

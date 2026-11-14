@@ -24,6 +24,7 @@ async function filesUnder(directory, prefix = '') {
 
 function validatePackage(pkg) {
   if (pkg.name !== 'dsh-toolbox-bundle' || !pkg.version) throw new Error('Unexpected complete Bundle manifest');
+  if (pkg.os !== undefined || pkg.cpu !== undefined) throw new Error('JavaScript bundle must not set os/cpu installation filters; declare native targets instead');
   if (Object.keys(pkg.dependencies ?? {}).length) throw new Error('The complete Bundle must not need dependency downloads');
   for (const hook of ['prepare', 'prepack', 'prepublish', 'preinstall', 'install', 'postinstall']) {
     if (pkg.scripts?.[hook]) throw new Error(`Installation hook is not allowed: ${hook}`);

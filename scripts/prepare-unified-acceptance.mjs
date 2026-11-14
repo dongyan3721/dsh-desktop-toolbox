@@ -1,14 +1,14 @@
 // Fixtures for owned, workspace-local acceptance only. Not part of the bundle.
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { resolve, join, relative, sep } from 'node:path';
+import { readFile, writeFile, mkdir, realpath } from 'node:fs/promises';
+import { resolve, join, relative, isAbsolute } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const [caseName, profileArg, phase = 'prepare'] = process.argv.slice(2);
 assert.match(caseName, /^[a-z0-9-]+$/);
 assert.ok(['prepare', 'usage-fixture'].includes(phase));
-const profile = resolve(profileArg);
-assert.ok(!relative(root, profile).startsWith('..') && relative(root, profile) !== '');
+const profile = await realpath(resolve(profileArg));
+assert.ok(!isAbsolute(relative(root, profile)) && !relative(root, profile).startsWith('..') && relative(root, profile) !== '');
 const dataDir = join(root, 'runtime/beta8', caseName, 'toolbox-data');
 if (phase === 'usage-fixture') {
   const path = join(dataDir, 'config.json');
