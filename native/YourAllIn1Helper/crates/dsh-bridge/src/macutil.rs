@@ -342,17 +342,12 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     fn endpoint_root() -> PathBuf {
-        let tmp = std::env::var("TMPDIR").unwrap_or_default();
-        let tmp = tmp.trim_end_matches('/').to_string();
-        for candidate in ["/tmp", "/private/tmp"] {
-            if !candidate.is_empty() && (tmp.is_empty() || !candidate.starts_with(&tmp)) {
-                let path = PathBuf::from(candidate);
-                if path.is_dir() {
-                    return path;
-                }
-            }
-        }
-        crate::test_fixture::scoped_fixture("dsh-bridge-tests", "socket-root")
+        // A sibling of TMPDIR exercises independent Host/native temp paths,
+        // while all fixtures remain inside this worktree and sun_path stays short.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .ancestors().nth(4).expect("workspace root").join("build/ipc");
+        fs::create_dir_all(&root).unwrap();
+        root
     }
 
     struct PrivateDir {
