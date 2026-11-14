@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, chmod } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { buildGithubBundle, verifyGithubBundle } from '../scripts/bundle-github.mjs';
+import { buildGithubBundle, verifyGithubBundle, nativeTargets } from '../scripts/bundle-github.mjs';
 
 const revision = '1'.repeat(40);
 async function fixture(t) {
@@ -12,8 +12,8 @@ async function fixture(t) {
   const root = await mkdtemp(join(temp, 'github-bundle-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-  // Preserve the Windows layout regression even when this release targets Mac.
-  pkg.os = ['win32']; pkg.cpu = ['x64'];
+  // Individual target fixtures remain useful within a unified release.
+  pkg.dshToolbox = { nativeTargets: ['win32-x64'] };
   await writeFile(join(root, 'package.json'), JSON.stringify(pkg));
   const host = join(root, 'packages/dsh-toolbox');
   const client = join(root, 'packages/dsh-toolbox-client');
@@ -23,7 +23,10 @@ async function fixture(t) {
   for (const name of ['human-entry/host.js', 'desktop/index.js', 'agent/index.js']) await writeFile(join(host, 'lib', name), 'export function apply() {}\n');
   await writeFile(join(client, 'client.js'), "window.__ModuleLoader__.load({\n  id: 'dsh-toolbox-client',\n  factory: () => ({})\n});\n");
   for (const [name, binary, runtime] of [['desktop-manifest.json', 'all-in-one-desktop.exe', 'desktop'], ['native-manifest.json', 'dsh-toolbox-native.exe', undefined]]) {
-    const bytes = Buffer.from(`synthetic:${binary}`);
+    const bytes = Buffer.alloc(256);
+    bytes.writeUInt16LE(0x5a4d, 0); bytes.writeUInt32LE(128, 60);
+    bytes.writeUInt32LE(0x00004550, 128); bytes.writeUInt16LE(0x8664, 132);
+    bytes.writeUInt16LE(2, 150); bytes.writeUInt16LE(0x20b, 152);
     await writeFile(join(host, 'resources/win32-x64', binary), bytes);
     await writeFile(join(host, 'resources', name), JSON.stringify({ pluginVersion: pkg.version, platform: 'win32', architecture: 'x64', protocolVersion: 1, runtime, nativeSourceRevision: revision, sha256: createHash('sha256').update(bytes).digest('hex') }));
   }
@@ -35,7 +38,8 @@ test('complete Bundle is self-contained and registers its own browser package id
   const manifest = await buildGithubBundle({ root: f.root, sourceRevision: revision });
   assert.equal(manifest.sourceRevision, revision);
   assert.equal(manifest.version, f.pkg.version);
-  assert.equal(manifest.files.length, 8);
+  assert.equal(manifest.files.length, 6);
+  assert.ok(manifest.files.every(file => !file.path.includes('dsh-toolbox-native') && !file.path.endsWith('native-manifest.json')));
   assert.match(await readFile(join(f.root, 'distribution/client.js'), 'utf8'), /id: 'dsh-toolbox-bundle'/);
   assert.match(await readFile(join(f.client, 'client.js'), 'utf8'), /id: 'dsh-toolbox-client'/);
   assert.deepEqual(await verifyGithubBundle(f.root), manifest);
@@ -80,10 +84,7 @@ test('assembly refuses a junction instead of deleting its target', async t => {
   assert.equal(await readFile(join(target, 'marker'), 'utf8'), 'keep');
 });
 
-test('Mac Git URL distribution preserves app identity, architecture and executable inventory', async t => {
-  const f = await fixture(t);
-  f.pkg.os = ['darwin']; f.pkg.cpu = ['arm64'];
-  await writeFile(join(f.root, 'package.json'), JSON.stringify(f.pkg));
+async function macResources(f) {
   const resources = join(f.host, 'resources');
   const app = join(resources, 'darwin-arm64/All-in-One Toolbox.app/Contents');
   await mkdir(join(app, 'MacOS'), { recursive: true });
@@ -95,6 +96,14 @@ test('Mac Git URL distribution preserves app identity, architecture and executab
   await writeFile(join(app, 'Info.plist'), '<plist>synthetic app identity</plist>');
   await writeFile(join(app, 'Resources/icon.icns'), 'synthetic icon');
   await writeFile(join(resources, 'darwin-arm64/desktop-manifest.json'), JSON.stringify({ pluginVersion: f.pkg.version, platform: 'darwin', architecture: 'arm64', runtime: 'desktop', protocolVersion: 1, nativeSourceRevision: revision, sha256: createHash('sha256').update(bytes).digest('hex') }));
+  return { bytes, binary };
+}
+
+test('Mac Git URL distribution preserves app identity, architecture and executable inventory', async t => {
+  const f = await fixture(t);
+  f.pkg.dshToolbox.nativeTargets = ['darwin-arm64'];
+  await writeFile(join(f.root, 'package.json'), JSON.stringify(f.pkg));
+  const { bytes, binary } = await macResources(f);
   const manifest = await buildGithubBundle({ root: f.root, sourceRevision: revision });
   assert.ok(manifest.files.some(file => file.path.endsWith('/Info.plist')));
   assert.equal(manifest.files.filter(file => file.executable).length, 1);
@@ -107,4 +116,34 @@ test('Mac Git URL distribution preserves app identity, architecture and executab
   bytes.writeUInt32LE(0x01000007, 4);
   await writeFile(binary, bytes);
   await assert.rejects(buildGithubBundle({ root: f.root, sourceRevision: revision }), /integrity manifest/);
+});
+
+
+test('one platform-neutral bundle ships both native targets and rejects a missing Windows payload', async t => {
+  const f = await fixture(t);
+  f.pkg.dshToolbox.nativeTargets = ['win32-x64', 'darwin-arm64'];
+  assert.equal(f.pkg.os, undefined);
+  assert.equal(f.pkg.cpu, undefined);
+  await writeFile(join(f.root, 'package.json'), JSON.stringify(f.pkg));
+  await macResources(f);
+  const manifest = await buildGithubBundle({ root: f.root, sourceRevision: revision });
+  assert.equal(manifest.files.filter(file => file.path.endsWith('/all-in-one-desktop.exe')).length, 1);
+  assert.equal(manifest.files.filter(file => file.path.endsWith('/MacOS/all-in-one-desktop')).length, 1);
+  assert.deepEqual(nativeTargets(f.pkg).map(t => t.directory), ['win32-x64', 'darwin-arm64']);
+  assert.deepEqual(await verifyGithubBundle(f.root), manifest);
+  await rm(join(f.host, 'resources/win32-x64/all-in-one-desktop.exe'));
+  await assert.rejects(buildGithubBundle({ root: f.root, sourceRevision: revision }), { code: 'ENOENT' });
+  assert.deepEqual(await verifyGithubBundle(f.root), manifest);
+});
+
+test('a matching hash cannot disguise a wrong Windows executable architecture', async t => {
+  const f = await fixture(t);
+  const binary = join(f.host, 'resources/win32-x64/all-in-one-desktop.exe');
+  const bytes = await readFile(binary); bytes.writeUInt16LE(0xaa64, 132);
+  await writeFile(binary, bytes);
+  const manifestPath = join(f.host, 'resources/desktop-manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath));
+  manifest.sha256 = createHash('sha256').update(bytes).digest('hex');
+  await writeFile(manifestPath, JSON.stringify(manifest));
+  await assert.rejects(buildGithubBundle({ root: f.root, sourceRevision: revision }), /Windows x64 PE/);
 });

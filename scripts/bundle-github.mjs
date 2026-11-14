@@ -31,13 +31,16 @@ function validatePackage(pkg) {
   if (pkg.dsh?.client?.platform !== 'web' || pkg.dsh?.bundle?.patch !== './cordis.patch.yml') throw new Error('Missing Bundle/Client declaration');
 }
 
-function nativeTargets(pkg) {
+export function nativeTargets(pkg) {
   const targets = [];
-  if (pkg.os?.includes('win32') && pkg.cpu?.includes('x64')) targets.push({
+  const declared = pkg.dshToolbox?.nativeTargets;
+  if (!Array.isArray(declared) || !declared.length || new Set(declared).size !== declared.length
+    || declared.some(target => !['win32-x64', 'darwin-arm64', 'darwin-x64'].includes(target))) throw new Error('Declare an explicit supported native target inventory');
+  if (declared.includes('win32-x64')) targets.push({
     platform: 'win32', architecture: 'x64', directory: 'win32-x64',
-    manifests: [['desktop-manifest.json', 'win32-x64/all-in-one-desktop.exe', 'desktop'], ['native-manifest.json', 'win32-x64/dsh-toolbox-native.exe', undefined]],
+    manifests: [['desktop-manifest.json', 'win32-x64/all-in-one-desktop.exe', 'desktop']],
   });
-  for (const architecture of ['arm64', 'x64']) if (pkg.os?.includes('darwin') && pkg.cpu?.includes(architecture)) {
+  for (const architecture of ['arm64', 'x64']) if (declared.includes(`darwin-${architecture}`)) {
     const directory = `darwin-${architecture}`;
     targets.push({ platform: 'darwin', architecture, directory,
       manifests: [[`${directory}/desktop-manifest.json`, `${directory}/All-in-One Toolbox.app/Contents/MacOS/all-in-one-desktop`, 'desktop']],
@@ -55,7 +58,12 @@ async function validateNative(resources, pkg) {
     if (manifest.pluginVersion !== pkg.version || manifest.platform !== target.platform || manifest.architecture !== target.architecture
       || manifest.protocolVersion !== 1 || manifest.runtime !== runtime || manifest.sha256 !== sha256(bytes)
       || !/^[a-f0-9]{40}$/.test(manifest.nativeSourceRevision)) throw new Error(`Invalid native integrity manifest: ${name}`);
-    if (target.platform === 'darwin') {
+    if (target.platform === 'win32') {
+      const pe = bytes.length >= 64 ? bytes.readUInt32LE(60) : -1;
+      if (bytes.length < 64 || bytes.readUInt16LE(0) !== 0x5a4d || pe < 64 || pe + 26 > bytes.length
+        || bytes.readUInt32LE(pe) !== 0x00004550 || bytes.readUInt16LE(pe + 4) !== 0x8664
+        || !(bytes.readUInt16LE(pe + 22) & 2) || bytes.readUInt16LE(pe + 24) !== 0x20b) throw new Error(`Expected a Windows x64 PE executable: ${binary}`);
+    } else if (target.platform === 'darwin') {
       const cpuType = target.architecture === 'arm64' ? 0x0100000c : 0x01000007;
       if (bytes.length < 32 || bytes.readUInt32LE(0) !== 0xfeedfacf || bytes.readUInt32LE(4) !== cpuType || bytes.readUInt32LE(12) !== 2) throw new Error(`Wrong Mach-O architecture: ${binary}`);
       const info = await readFile(join(resources, target.directory, 'All-in-One Toolbox.app/Contents/Info.plist'));
@@ -120,7 +128,14 @@ export async function buildGithubBundle({ root = workspace, sourceRevision } = {
     await cp(join(hostRoot, 'lib'), join(stage, 'lib'), { recursive: true });
     await mkdir(join(stage, 'resources'), { recursive: true });
     for (const target of nativeTargets(pkg)) {
-      await cp(join(hostRoot, 'resources', target.directory), join(stage, 'resources', target.directory), { recursive: true });
+      if (target.platform === 'darwin') {
+        await cp(join(hostRoot, 'resources', target.directory), join(stage, 'resources', target.directory), { recursive: true });
+      } else {
+        // The complete plugin exposes only the grant-gated GUI kernel. Historical
+        // headless fixtures may exist in development resources but do not ship.
+        await mkdir(join(stage, 'resources', target.directory));
+        for (const [, binary] of target.manifests) await cp(join(hostRoot, 'resources', binary), join(stage, 'resources', binary));
+      }
       for (const [name] of target.manifests) if (!name.startsWith(`${target.directory}/`)) await cp(join(hostRoot, 'resources', name), join(stage, 'resources', name));
     }
     await writeFile(join(stage, 'client.js'), originalClient.replace(originalPrefix, `window.__ModuleLoader__.load({\n  id: '${pkg.name}',`));

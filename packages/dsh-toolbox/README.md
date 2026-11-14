@@ -1,10 +1,8 @@
-# DSH Toolbox first beta
+# DSH Toolbox Host development package
 
-beta.5 将原主控台嵌入 Harness 页面，保留原生功能窗口，新增快捷键冲突详情和 Windows 剪贴板来源。旧便笺工具仅留在仓库测试 fixture，生产只使用受授权控制的 `toolbox_notes`。未设置 `DSH_HOME` 时的绝对数据目录修复继续保留。
+`0.1.0-beta.8` 与同版本 Client 使用同一套 JavaScript Host，支持 Windows x64 和 macOS arm64 原生伴随程序。插件不设置 os/cpu 安装过滤；运行时根据系统选择对应二进制，并校验各自清单。
 
-`0.1.0-beta.5`：Windows x64 原桌面工具箱迁移版。声明支持 Harness `0.2.2-rc.1` / `0.2.2-rc.3`、Cordis `4.1.0`、Node 24。与同版本 `dsh-toolbox-client` 一起安装，侧栏“工具箱”直接显示主控台；人的操作无需模型请求。独立主窗可显式打开，快捷键录入在原生偏好设置中完成。
-
-快捷键诊断区分内部冲突、占用、系统拒绝、非法组合和探测失败，支持展开详情及重检。Windows 未提供外部注册持有者 PID，界面会如实提示无法确认占用程序并提供排查方向。剪贴板来源取系统所有者的应用名，取不到时保持未知，历史空来源不会自动回填。
+最终用户推荐根目录完整包 `dsh-toolbox-bundle`：两套系统使用同一 GitHub tag URL 或同一个 tgz，无需构建脚本。不要同时启用完整包与开发双包。使用方式和发布边界以仓库根 README 及 `docs/BETA8_UNIFIED_RELEASE.zh-CN.md` 为准。
 
 保留原十模块界面、窗口、托盘与快捷键。新配置只启用便笺；其他功能按需开启。功能启停与“允许 Agent 访问”独立，Agent 授权默认关闭。截图、剪贴板、屏幕注释、应用使用时长、便笺五项可在明确授权后与 Agent 共享同一桌面内核及数据。脚本、多媒体、窗口置顶、翻译、密码本不支持 Agent。
 
