@@ -1,5 +1,16 @@
 # DSH Toolbox collaboration rules
 
+## Current unified beta.8 release (supersedes platform split)
+
+The user requires ONE release version and ONE complete bundle for Windows and
+macOS. Root and Host JavaScript packages must not have platform installation
+filters; native payloads use an explicit target inventory and runtime dispatch.
+Build current native sources for Windows, retain the accepted Mac app, and
+verify each bundled target. Preserve beta.7 and all older tags/assets. Use
+workspace-local profiles/caches and retain default-OFF Agent grants. Codex owns
+CI, integration, packaging and publication. CI runners are disposable test
+machines; do not change the local machine global toolchain or everyday data.
+
 ## Current macOS beta.7 release
 
 The user now defers dependency decoupling and authorizes a macOS Apple Silicon

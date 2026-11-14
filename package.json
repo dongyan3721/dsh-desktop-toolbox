@@ -1,16 +1,10 @@
 {
   "name": "dsh-toolbox-bundle",
-  "version": "0.1.0-beta.7",
-  "description": "DeepSeek Harness desktop toolbox: macOS Apple Silicon beta, five optional Agent modules",
+  "version": "0.1.0-beta.8",
+  "description": "Cross-platform DeepSeek Harness desktop toolbox with five optional Agent modules",
   "private": true,
   "license": "MIT",
   "type": "module",
-  "os": [
-    "darwin"
-  ],
-  "cpu": [
-    "arm64"
-  ],
   "main": "./distribution/lib/human-entry/host.js",
   "exports": {
     ".": "./distribution/lib/human-entry/host.js",
@@ -46,5 +40,11 @@
     "build:bundle": "node scripts/bundle-github.mjs",
     "test": "node --test tests/*.test.mjs packages/dsh-toolbox/tests/*.test.mjs",
     "demo": "node scripts/demo.mjs"
+  },
+  "dshToolbox": {
+    "nativeTargets": [
+      "win32-x64",
+      "darwin-arm64"
+    ]
   }
 }

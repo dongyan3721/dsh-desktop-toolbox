@@ -1,14 +1,8 @@
 {
   "name": "dsh-toolbox",
-  "version": "0.1.0-beta.7",
-  "description": "DeepSeek Harness desktop toolbox: macOS Apple Silicon beta, five optional Agent modules",
+  "version": "0.1.0-beta.8",
+  "description": "Cross-platform DeepSeek Harness desktop toolbox with five optional Agent modules",
   "type": "module",
-  "os": [
-    "darwin"
-  ],
-  "cpu": [
-    "arm64"
-  ],
   "main": "./lib/index.js",
   "exports": {
     ".": "./lib/index.js",
@@ -35,5 +29,11 @@
     "@deepseek-ai/dsh-subprocess": "0.2.2-rc.1 || 0.2.2-rc.3",
     "@deepseek-ai/dsh-sandbox": "0.2.2-rc.1 || 0.2.2-rc.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "dshToolbox": {
+    "nativeTargets": [
+      "win32-x64",
+      "darwin-arm64"
+    ]
+  }
 }

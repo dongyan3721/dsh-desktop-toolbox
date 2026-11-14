@@ -1,0 +1,88 @@
+name: Unified bundle Windows validation
+on:
+  push:
+    branches: [codex/unified-beta8]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24.21.0'
+      - name: Prepare workspace tools
+        run: |
+          . ./scripts/Use-ProjectEnvironment.ps1
+          npm install --prefix .tmp/ci-tools --no-audit --no-fund pnpm@11.28.5
+          if ($LASTEXITCODE -ne 0) { throw 'pnpm tool preparation failed' }
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            .tmp/cargo-home
+            build/rust/target
+            build/rust/intermediates
+          key: windows-native-v1-${{ hashFiles('native/YourAllIn1Helper/Cargo.lock') }}
+      - name: Build original UI and native programs
+        run: |
+          . ./scripts/Use-ProjectEnvironment.ps1
+          & ./.tmp/ci-tools/node_modules/.bin/pnpm.cmd --dir native/YourAllIn1Helper/src-ui install --frozen-lockfile --store-dir "$PWD/.tmp/pnpm-store"
+          if ($LASTEXITCODE -ne 0) { throw 'UI dependency preparation failed' }
+          & ./.tmp/ci-tools/node_modules/.bin/pnpm.cmd --dir native/YourAllIn1Helper/src-ui run build
+          if ($LASTEXITCODE -ne 0) { throw 'UI build failed' }
+          cargo fetch --manifest-path native/YourAllIn1Helper/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) { throw 'Locked Rust dependency preparation failed' }
+          cargo build --manifest-path native/YourAllIn1Helper/Cargo.toml -p all-in-one-host --bin all-in-one-desktop --features tauri/custom-protocol --release --locked --offline -j2
+          if ($LASTEXITCODE -ne 0) { throw 'Windows desktop build failed' }
+          cargo build --manifest-path native/YourAllIn1Helper/Cargo.toml -p dsh-bridge --bin dsh-toolbox-native --release --locked --offline -j2
+          if ($LASTEXITCODE -ne 0) { throw 'Historical protocol fixture build failed' }
+          node scripts/bundle-desktop.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Desktop manifest failed' }
+          node scripts/bundle-native.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Protocol fixture manifest failed' }
+          node scripts/build.mjs
+      - name: Native regression tests
+        run: |
+          . ./scripts/Use-ProjectEnvironment.ps1
+          cargo test --manifest-path native/YourAllIn1Helper/Cargo.toml -p app-core -p dsh-bridge -p os-hal -p mod-screen-ink -p mod-screenshot -p all-in-one-host --lib --release --locked --offline -j2
+          if ($LASTEXITCODE -ne 0) { throw 'Windows native regression failed' }
+      - name: Prepare official Harness SDK (files only)
+        run: |
+          . ./scripts/Use-ProjectEnvironment.ps1
+          $installer = "$PWD/.tmp/deepseek-harness-0.2.2-rc.3-win-x64.exe"
+          Invoke-WebRequest 'https://download.deepseek.com/dsh-desk/bin/win-x64/deepseek-harness-0.2.2-rc.3-win-x64.exe' -OutFile $installer
+          $hash = [Convert]::ToBase64String([Security.Cryptography.SHA512]::HashData([IO.File]::ReadAllBytes($installer)))
+          if ($hash -ne 'GiJf8kx+C7eoiZ0xQSYBcTyh5xmXQl+vh63U6uSm963McK1AkMgB8PydzuekWdUY7hyURvhVMHANM4pn+tCKzQ==') { throw 'Official Harness installer checksum mismatch' }
+          & 7z x $installer "-o$PWD/build/harness-installer" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'Installer extraction failed' }
+          $payload = Get-ChildItem build/harness-installer -Recurse -Filter app-64.7z | Select-Object -First 1
+          if (-not $payload) { throw 'Official app payload not found' }
+          & 7z x $payload.FullName "-o$PWD/build/harness-windows" -y | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'App extraction failed' }
+          $env:DSH_HARNESS_APP_DIR = "$PWD/build/harness-windows"
+          "DSH_HARNESS_APP_DIR=$env:DSH_HARNESS_APP_DIR" >> $env:GITHUB_ENV
+          $app = Get-ChildItem $env:DSH_HARNESS_APP_DIR -Filter '*.exe' | Where-Object { $_.Name -notmatch 'Uninstall' } | Select-Object -First 1
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          & $app.FullName scripts/prepare-installed-sdk.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installed SDK extraction failed' }
+      - name: Actual SDK regression tests
+        run: |
+          . ./scripts/Use-ProjectEnvironment.ps1
+          node --test tests/*.test.mjs packages/dsh-toolbox/tests/*.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Windows SDK regression failed' }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: windows-current-native
+          path: |
+            packages/dsh-toolbox/resources/win32-x64/
+            packages/dsh-toolbox/resources/desktop-manifest.json
+            packages/dsh-toolbox/resources/native-manifest.json
+            artifacts/
+          if-no-files-found: error
