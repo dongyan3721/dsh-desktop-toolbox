@@ -145,13 +145,17 @@ fn access_snapshot(host: &DesktopHost) -> Value {
     })
 }
 
+fn physical_monitors(host: &DesktopHost) -> Result<Vec<os_hal::DisplayMonitorInfo>, ControlError> {
+    let capturer = &host.os_hal.screen_capturer;
+    let logical = capturer.monitor_coordinates_are_logical();
+    Ok(capturer.list_monitors()
+        .map_err(|_| ControlError::new("UNAVAILABLE", "display list is not available"))?
+        .into_iter().map(|monitor| monitor.physical_pixels(logical)).collect())
+}
+
 fn monitors(host: &DesktopHost) -> Result<Value, ControlError> {
     guard(host, "screenshot")?;
-    let listed = host
-        .os_hal
-        .screen_capturer
-        .list_monitors()
-        .map_err(|_| ControlError::new("UNAVAILABLE", "display list is not available"))?;
+    let listed = physical_monitors(host)?;
     Ok(json!({
         "synthetic": host.mock_hal.is_some(),
         "monitors": listed,
@@ -168,11 +172,7 @@ fn capture(host: &DesktopHost, params: &Value, cancel: &AtomicBool) -> Result<Va
     if cancel.load(Ordering::Acquire) {
         return Err(ControlError::cancelled());
     }
-    let listed = host
-        .os_hal
-        .screen_capturer
-        .list_monitors()
-        .map_err(|_| ControlError::new("UNAVAILABLE", "display list is not available"))?;
+    let listed = physical_monitors(host)?;
     let monitor = listed
         .iter()
         .find(|monitor| monitor.id == monitor_id)
@@ -954,11 +954,7 @@ fn canvas_bounds(host: &DesktopHost) -> Result<CanvasBounds, ControlError> {
         .window_pool
         .get_active_window("screen-ink-canvas")
         .ok_or_else(|| ControlError::new("UNAVAILABLE", "shared canvas has no draw acknowledgment yet"))?;
-    let monitors = host
-        .os_hal
-        .screen_capturer
-        .list_monitors()
-        .map_err(|_| ControlError::new("UNAVAILABLE", "display list is not available"))?;
+    let monitors = physical_monitors(host)?;
     let primary = monitors
         .iter()
         .find(|monitor| monitor.is_primary)
@@ -1214,11 +1210,7 @@ fn parse_strokes(host: &DesktopHost, params: &Value) -> Result<usize, ControlErr
     if strokes.is_empty() || strokes.len() > MAX_STROKES {
         return Err(ControlError::new("INVALID_REQUEST", "stroke count is out of range"));
     }
-    let monitors = host
-        .os_hal
-        .screen_capturer
-        .list_monitors()
-        .map_err(|_| ControlError::new("UNAVAILABLE", "display list is not available"))?;
+    let monitors = physical_monitors(host)?;
     let mut points = 0_usize;
     for stroke in strokes {
         let stroke = stroke

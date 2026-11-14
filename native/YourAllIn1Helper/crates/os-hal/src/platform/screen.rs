@@ -9,6 +9,10 @@ use xcap::Monitor;
 use xcap::Window;
 
 impl ScreenCapturer for NativeOsHal {
+    fn monitor_coordinates_are_logical(&self) -> bool {
+        cfg!(target_os = "macos")
+    }
+
     fn list_monitors(&self) -> HalResult<Vec<DisplayMonitorInfo>> {
         let monitors = Monitor::all().map_err(native_error)?;
         Ok(monitors

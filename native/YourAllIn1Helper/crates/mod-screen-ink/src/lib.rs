@@ -470,13 +470,7 @@ impl ScreenInkModule {
                     .iter()
                     .find(|m| m.is_primary)
                     .unwrap_or(&monitors[0]);
-                let scale = if primary.scale_factor > 0.1 {
-                    primary.scale_factor
-                } else {
-                    1.0
-                };
-                let logical_w = primary.width as f64 / scale;
-                let logical_h = primary.height as f64 / scale;
+                let (logical_w, logical_h) = primary.logical_size(self.capturer.monitor_coordinates_are_logical());
                 Ok((logical_w.max(640.0), logical_h.max(480.0)))
             }
             _ => Ok((1920.0, 1080.0)),

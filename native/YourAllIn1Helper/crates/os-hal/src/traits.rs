@@ -9,8 +9,11 @@ use std::sync::Arc;
 
 /// 1. Screen & window frame capture adapter (`mod-screenshot`, `mod-screen-ink`).
 pub trait ScreenCapturer: Send + Sync + 'static {
-    /// Lists all connected display monitors and their physical coordinates.
+    /// Lists connected monitors in native desktop units (macOS points, Windows pixels).
     fn list_monitors(&self) -> HalResult<Vec<DisplayMonitorInfo>>;
+    /// Whether monitor bounds use logical points rather than physical pixels.
+    /// Synthetic adapters retain pixel bounds unless they explicitly opt in.
+    fn monitor_coordinates_are_logical(&self) -> bool { false }
     /// Captures a frozen RGBA8 frame of the specified monitor (or primary monitor if `None`).
     fn capture_monitor(&self, monitor_id: Option<u32>) -> HalResult<CapturedFrame>;
     /// 抓取全局桌面单位矩形（与 `list_monitors` 的 x/y/宽高同一空间）。
