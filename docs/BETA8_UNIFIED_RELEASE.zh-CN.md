@@ -71,3 +71,21 @@ Windows 当前源码编译已在 CI run `43613256520` 通过，随后进入原�
 最初测试时没有活动显示器，脚本在空列表读取 monitor.id 失败，不计通过。已补充明确的活动显示器断言，桌面恢复活动后在新的隔离数据 `mac-local-2` 完整重跑成功，没有伪造监视器或截图。
 
 机器证据在本工作区 `artifacts/beta8/`。Windows 是 GitHub 托管虚拟桌面，Mac 是本机 Retina；不宣称 Intel、其他原生架构、全部物理快捷键、多屏、首次系统授权或所有十模块已重新验收。五模块用实际工具链执行，未声明模型自动选择工具已验收。
+
+## 发布后最终验收：通过
+
+已发布 [v0.1.0-beta.8](https://github.com/dongyan3721/dsh-desktop-toolbox/releases/tag/v0.1.0-beta.8)，tag 指向 `7fc8fc3ecc1923c8bd924449d1825cc4f07f6011`。双方使用同一个 tag URL 和同一个 26,990,421 字节的 `.tgz`，没有按系统拆分插件版本。
+
+| 公开来源 | Windows x64 | macOS arm64 |
+| --- | --- | --- |
+| 固定 commit `30c868c5eadcdcf9e763c67629a125a66e3835ee` | 安装、默认拒绝、五模块、撤权、重启、清理通过 | 安装、实际原生路径、默认拒绝通过 |
+| `#v0.1.0-beta.8` | 全部三阶段通过 | 全部三阶段通过 |
+| Release `.tgz` URL | 全部三阶段通过 | 安装、实际原生路径、默认拒绝通过；完整 tgz 的五模块已在本地同一文件通过 |
+
+Windows 两条正式发布来源均在 [run 43674752706](https://github.com/dongyan3721/dsh-desktop-toolbox/actions/runs/43674752706) 通过，各用独立 profile / 数据；共 2 次完整五模块成功、10 次撤权边界成功、2 次重启持久化成功，并明确确认没有遗留原生进程。实际程序均位于各自 `node_modules/dsh-toolbox-bundle/distribution/resources/win32-x64`。
+
+Mac 正式 tag 在 `mac-tag-{default,enabled,persisted}.log` 全部通过，正式 tgz 在 `mac-release-default.log` 启动通过。下载公开 tgz 与公开 SHA256SUMS 文件，校验通过，并与本地发布物逐字节比较相同。
+
+安装版 Electron 的隔离 profile 中，通过客户端「添加插件」输入正式 tag URL，界面显示已安装 beta.8；启用后侧栏工具箱和原主控台显示正确，只有便笺默认启用，五项 Agent 授权全部关闭。真实原生进程来自该 profile 的安装目录，缓存来自工作区指定 store。停用后侧栏撤回；关闭隔离 Electron 后本任务原生进程为 0。没有改动日常 Harness profile。
+
+界面证据：工作区 `artifacts/beta8/unified-tag-installed.jpg`、`unified-console.jpg`；完整机器证据位于 `artifacts/beta8/`。无本机路径的结果摘要见随 Release 提供的 `BETA8_UNIFIED_ACCEPTANCE.json`。发布后只补充记录，tag 和安装包不覆盖。

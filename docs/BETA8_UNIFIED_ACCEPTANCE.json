@@ -1,0 +1,58 @@
+{
+  "version": "0.1.0-beta.8",
+  "oneVersionOneBundle": true,
+  "javascriptPlatformFilters": false,
+  "nativeTargets": [
+    "win32-x64",
+    "darwin-arm64"
+  ],
+  "nativeSourceRevision": "4f30a6a6296e5a38c03adf38912501428861bbce",
+  "releaseTagCommit": "7fc8fc3ecc1923c8bd924449d1825cc4f07f6011",
+  "archiveSha256": "6dbc8a92bc6712c1b4ed04136b0bfdfaf7875e7c1cfeb3ab77ea7607dcb25764",
+  "harnessVersion": "0.2.2-rc.3",
+  "runtimeFiles": 35,
+  "publicSourcesInstalledOnBothSystems": [
+    "GitHub commit",
+    "GitHub tag",
+    "Release tgz URL"
+  ],
+  "actualInstalledClientAndNativePathsAsserted": true,
+  "fiveModuleSdkFlowsPassedOnBothSystems": true,
+  "defaultOffAndAllFiveGrantBoundariesPassedOnBothSystems": true,
+  "notePersistencePassedOnBothSystems": true,
+  "ownedNativeProcessesAfterCleanup": 0,
+  "tests": {
+    "windowsNative": {
+      "pass": 235,
+      "ignored": 4
+    },
+    "windowsNodeSdk": {
+      "pass": 201,
+      "skipped": 2
+    },
+    "macNative": {
+      "pass": 105,
+      "ignored": 1
+    },
+    "macNode": {
+      "pass": 194,
+      "skipped": 9
+    }
+  },
+  "ci": {
+    "windowsBuildAndSdk": 43615895675,
+    "windowsPublicCommit": 43674358382,
+    "windowsPublicTagAndRelease": 43674752706
+  },
+  "hardwareScope": {
+    "windows": "Hosted Hyper-V 1024x768 display",
+    "mac": "Local Retina display"
+  },
+  "limits": [
+    "No Intel Mac or other native architecture acceptance",
+    "No fresh-system OS permission acceptance",
+    "No Developer ID notarization",
+    "No model tool-selection claim",
+    "No full physical-hotkey or multi-monitor acceptance"
+  ]
+}
