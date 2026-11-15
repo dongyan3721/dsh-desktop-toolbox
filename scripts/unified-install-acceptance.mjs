@@ -122,6 +122,7 @@ async function run(ctx) {
   const monitorResult = (await tool('toolbox_screenshot', { action: 'monitors' })).value;
   assert.equal(monitorResult.synthetic, false);
   const monitor = monitorResult.monitors.find(m => m.is_primary) ?? monitorResult.monitors[0];
+  assert.ok(monitor, 'Real desktop acceptance requires an active display; keep the desktop awake');
   const screenshot = await tool('toolbox_screenshot', { action: 'capture', monitor_id: monitor.id, region: { x: 0, y: 0, width: 32, height: 32 } });
   assert.ok(screenshot.content.some(c => c.type === 'image' && c.attachment?.attachmentId));
   assert.equal(screenshot.value.image.width, 32);
